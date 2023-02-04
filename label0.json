@@ -1,0 +1,28 @@
+{
+    "errata": 0,
+    "features_for_read": {
+        "com.delphix:embedded_data": null,
+        "com.delphix:hole_birth": null
+    },
+    "guid": 10608472175031871000,
+    "hostname": "predator",
+    "name": "basic",
+    "pool_guid": 8547252841327130000,
+    "state": 0,
+    "top_guid": 10608472175031871000,
+    "txg": 4,
+    "vdev_children": 1,
+    "vdev_tree": {
+        "ashift": 9,
+        "asize": 1069023232,
+        "create_txg": 4,
+        "guid": 10608472175031871000,
+        "id": 0,
+        "is_log": 0,
+        "metaslab_array": 131,
+        "metaslab_shift": 26,
+        "path": "/home/dan/Documents/Coding/Rust/szfs/test/disk1.raw",
+        "type": "file"
+    },
+    "version": 5000
+}
