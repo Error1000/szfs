@@ -6,6 +6,7 @@ mod nvlist;
 mod byte_iter;
 mod zio;
 mod fletcher;
+mod lz4;
 
 pub trait Vdev {
     fn get_size(&self) -> u64;

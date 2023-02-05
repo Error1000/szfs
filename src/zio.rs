@@ -1,5 +1,5 @@
 use std::{fmt::Debug, collections::HashMap};
-use crate::{byte_iter::ByteIter, Vdev, fletcher};
+use crate::{byte_iter::ByteIter, Vdev, fletcher, lz4};
 
 
 struct DataVirtualAddress {
@@ -86,7 +86,7 @@ impl ChecksumMethod {
 #[derive(Debug, PartialEq, Eq)]
 enum CompressionMethod {
     Inherit = 0,
-    On = 1, // Equivalent to lz4
+    On = 1, // Equivalent to lz4 (https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L122)
     Off = 2,
     Lzjb = 3,
     Empty = 4,
@@ -284,11 +284,11 @@ impl BlockPointer {
             if dva.is_gang { todo!("Implement GANG blocks!"); }
             let Ok(data) = vdev.read(dva.parse_offset()+4*1024*1024, self.parse_physical_size() as usize) else { continue; };
             let computed_checksum = match self.checksum_method {
-                ChecksumMethod::Off => [0, 0, 0, 0],
-                ChecksumMethod::Fletcher4 => fletcher::do_fletcher4(&data),
+                ChecksumMethod::Fletcher4 | ChecksumMethod::On => fletcher::do_fletcher4(&data),
+                ChecksumMethod::Fletcher2 => fletcher::do_fletcher2(&data),
                 _ => todo!("Implement {:?} checksum!", self.checksum_method),
             };
-            
+
             if &computed_checksum != self.get_checksum() {
                 println!("Invalid checksum for dva: {:?}, ignoring.", dva);
                 continue;
@@ -299,7 +299,7 @@ impl BlockPointer {
                 CompressionMethod::Lz4 | CompressionMethod::On => {
                     let comp_size = u32::from_be_bytes(data[0..4].try_into().unwrap());
                     // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
-                    lz4::block::decompress(&data[4..comp_size as usize+4], Some(self.parse_logical_size() as i32)).map_err(|_| ())?
+                    lz4::lz4_decompress_blocks(&mut data[4..comp_size as usize+4].iter().copied()).map_err(|_| ())?
                 }
                 _ => todo!("Implement {:?} compression!", self.compression_method),
             };
