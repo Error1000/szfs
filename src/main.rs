@@ -5,6 +5,7 @@ use byte_iter::ByteIter;
 mod nvlist;
 mod byte_iter;
 mod zio;
+mod dmu;
 mod fletcher;
 mod lz4;
 
@@ -183,8 +184,8 @@ fn main() {
         panic!("no txg found in label!");
     };
 
-
     label0.set_raw_uberblock_size(2_usize.pow(top_level_ashift as u32));
+
     let mut uberblocks = Vec::<Uberblock>::new();
     for i in 0..label0.get_raw_uberblock_count() {
         let raw_uberblock = label0.get_raw_uberblock(i);
@@ -194,14 +195,27 @@ fn main() {
     }
     
     // println!("Parsed nv_list: {:?}!", name_value_pairs);
-    println!("Found {} uberblocks!", uberblocks.len());
+    // println!("Found {} uberblocks!", uberblocks.len());
+    uberblocks.sort_unstable_by(|a, b| a.ub_txg.cmp(&b.ub_txg));
 
-    let uberblock_with_highest_txg = uberblocks.iter_mut().filter(|u|u.ub_txg >= label_txg).max_by(|a, b| a.ub_txg.cmp(&b.ub_txg)).expect("Active uberblock should exist!");
-
-    println!("{:?}", uberblock_with_highest_txg);
-
+        
     let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
+    // TODO: Don't hardcode this
     vdevs.insert(0usize, &mut vdev);
-    let data = uberblock_with_highest_txg.ub_rootbp.dereference(vdevs).unwrap();
-    println!("{:x?}", data);
+
+    let mut uberblock_search_info = None;
+    for ub in uberblocks.iter_mut().rev() {
+        if let Ok(data) = ub.ub_rootbp.dereference(&mut vdevs) {
+            uberblock_search_info = Some((ub, data));
+            break;
+        }
+    };
+
+    let (active_uberblock, mos) = uberblock_search_info.unwrap();
+
+    let mos = dmu::Dnode::from_bytes(&mut mos.iter().copied());
+
+    println!("{:?}", active_uberblock);
+    println!("{:x?}", mos);
+    // std::io::stdout().write_all(&mos).unwrap();
 }

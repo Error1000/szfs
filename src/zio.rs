@@ -1,5 +1,5 @@
 use std::{fmt::Debug, collections::HashMap};
-use crate::{byte_iter::ByteIter, Vdev, fletcher, lz4};
+use crate::{byte_iter::ByteIter, Vdev, fletcher, lz4, dmu};
 
 
 struct DataVirtualAddress {
@@ -18,12 +18,12 @@ impl Debug for DataVirtualAddress {
 
 impl DataVirtualAddress {
    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<DataVirtualAddress> {
-    let vdev_id = (data.read_u32_le()?) & 0xFF_FF_FF_00; // ignore padding ( https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L129 )
+    let vdev_id = ((data.read_u32_le()?) & 0xFF_FF_FF_00) >> 8; // ignore padding ( https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L129 )
     let grid_and_asize = data.read_u32_le()?;
     let offset_and_gang_bit = data.read_u64_le()?;
     Some(DataVirtualAddress { 
         vdev_id, 
-        data_allocated_size_minus_one_in_sectors: grid_and_asize&0x00_FF_FF_FF, // ignore GRID as it is reserved 
+        data_allocated_size_minus_one_in_sectors: (grid_and_asize&0xFF_FF_FF_00) >> 8, // ignore GRID as it is reserved 
         offset_in_sectors: offset_and_gang_bit&(!(1<<63)), // bit 64 is the gang bit 
         is_gang: offset_and_gang_bit&(1<<63) != 0
     })
@@ -39,10 +39,16 @@ impl DataVirtualAddress {
    pub fn parse_offset(&self) -> u64 {
      self.offset_in_sectors*512
    }
+
+   pub fn dereference(&self, vdevs: &mut HashMap<usize, &mut dyn Vdev>) -> Result<Vec<u8>, ()> {
+        if self.is_gang { todo!("Implement GANG blocks!"); }
+        let Some(vdev) = vdevs.get_mut(&self.vdev_id.try_into().expect("overflow should be impossible")) else { return Err(()); };
+        vdev.read(self.parse_offset()+4*1024*1024, self.parse_allocated_size().try_into().expect("overflow should be impossible")) 
+   }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum ChecksumMethod {
+pub enum ChecksumMethod {
     Inherit = 0,
     On = 1, // equivalent to fletcher4 ( https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L122 )
     Off = 2,
@@ -84,7 +90,7 @@ impl ChecksumMethod {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum CompressionMethod {
+pub enum CompressionMethod {
     Inherit = 0,
     On = 1, // Equivalent to lz4 (https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L122)
     Off = 2,
@@ -129,67 +135,7 @@ impl CompressionMethod {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum DMUBlockType {
-    None = 0,
-    ObjectDirectory = 1,
-    ObjectArray = 2,
-    PackedNVList = 3,
-    NVListSize = 4,
-    BlockPointerList = 5,
-    BlockPointerListHeader = 6,
-    SpaceMapHeader = 7,
-    SpaceMap = 8,
-    IntentLog = 9,
-    DNode = 10,
-    ObjSet = 11,
-    DSLDataset = 12,
-    DSLDatasetChildMap = 13,
-    ObjSetSnapshotMap = 14,
-    DSLProperties = 15,
-    DSLObjSet = 16,
-    ZNode = 17,
-    AcessControlList = 18,
-    PlainFileContents = 19,
-    DirectoryContents = 20,
-    MasterNode = 21,
-    DeleteQueue = 22,
-    ZVol = 23,
-    ZVolProperties = 24
-}
 
-impl DMUBlockType {
-    pub fn from_value(value: usize) -> Option<DMUBlockType> {
-        Some(match value {
-            0  => DMUBlockType::None,
-            1  => DMUBlockType::ObjectDirectory, 
-            2  => DMUBlockType::ObjectArray,
-            3  => DMUBlockType::PackedNVList,
-            4  => DMUBlockType::NVListSize,
-            5  => DMUBlockType::BlockPointerList,
-            6  => DMUBlockType::BlockPointerListHeader,
-            7  => DMUBlockType::SpaceMapHeader,
-            8  => DMUBlockType::SpaceMap,
-            9  => DMUBlockType::IntentLog,
-            10 => DMUBlockType::DNode,
-            11 => DMUBlockType::ObjSet,
-            12 => DMUBlockType::DSLDataset,
-            13 => DMUBlockType::DSLDatasetChildMap,
-            14 => DMUBlockType::ObjSetSnapshotMap,
-            15 => DMUBlockType::DSLProperties,
-            16 => DMUBlockType::DSLObjSet,
-            17 => DMUBlockType::ZNode,
-            18 => DMUBlockType::AcessControlList,
-            19 => DMUBlockType::PlainFileContents,
-            20 => DMUBlockType::DirectoryContents,
-            21 => DMUBlockType::MasterNode,
-            22 => DMUBlockType::DeleteQueue,
-            23 => DMUBlockType::ZVol,
-            24 => DMUBlockType::ZVolProperties,
-            _ => return None
-        })
-    }
-}
 
 // Byte order (https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L591)
 // 0 = big endian
@@ -211,9 +157,9 @@ impl DMUBlockType {
 pub struct BlockPointer {
     dvas: [DataVirtualAddress; 3],
     level: usize,
-    fill: usize,
-    birth_txg: usize,
-    typ: DMUBlockType,
+    fill: u64,
+    logical_birth_txg: u64,
+    typ: dmu::Type,
     checksum_method: ChecksumMethod,
     compression_method: CompressionMethod,
     physical_size_in_sectors_minus_one: u16,
@@ -223,11 +169,12 @@ pub struct BlockPointer {
 
 impl Debug for BlockPointer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BlockPointer").field("dvas", &self.dvas).field("level", &self.level).field("fill", &self.fill).field("birth_txg", &self.birth_txg).field("typ", &self.typ).field("checksum_method", &self.checksum_method).field("compression_method", &self.compression_method).field("physical_size", &self.parse_physical_size()).field("logical_size", &self.parse_logical_size()).field("checksum", &self.checksum).finish()
+        f.debug_struct("BlockPointer").field("dvas", &self.dvas).field("level", &self.level).field("fill", &self.fill).field("logical_birth_txg", &self.logical_birth_txg).field("typ", &self.typ).field("checksum_method", &self.checksum_method).field("compression_method", &self.compression_method).field("physical_size", &self.parse_physical_size()).field("logical_size", &self.parse_logical_size()).field("checksum", &self.checksum).finish()
     }
 }
 
 impl BlockPointer {
+    pub fn get_ondisk_size() -> usize { 128 }
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<BlockPointer> {
         let dva1 = DataVirtualAddress::from_bytes_le(data)?;
         let dva2 = DataVirtualAddress::from_bytes_le(data)?;
@@ -236,22 +183,26 @@ impl BlockPointer {
 
         // Make sure we don't accidentally read an embedded block pointer
         if (info>>39)&1 != 0 { // Check embedded bit
-            println!("Tried to load an embeded block pointer as if it were a normal block pointer, this shouldn't happen if the program is well designed as it should check before trying to load itself!");
+            todo!("Handle embedded block pointers!");
+        }
+        
+        // Check endianness bit just in case
+        if (info>>63)&1 != 1 {
             return None;
         }
 
         // Skip padding
         data.nth((core::mem::size_of::<u64>()*3) - 1);
-        let birth_txg = data.read_u64_le()?;
+        let logical_birth_txg = data.read_u64_le()?;
         let fill_count = data.read_u64_le()?;
         let checksum = [data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?];
 
         Some(BlockPointer { 
             dvas: [dva1, dva2, dva3], 
             level: ((info >> 56)&0b1_1111) as usize, 
-            fill: fill_count.try_into().expect("Fill count should not be bigger than a native int!"),
-            birth_txg: birth_txg.try_into().expect("Txg must fit within native int!"),
-            typ: DMUBlockType::from_value(((info >> 48)&0b1111_1111) as usize)?, 
+            fill: fill_count,
+            logical_birth_txg,
+            typ: dmu::Type::from_value(((info >> 48)&0b1111_1111) as usize)?, 
             checksum_method: ChecksumMethod::from_value(((info >> 40)&0b1111_1111) as usize)?, 
             compression_method: CompressionMethod::from_value(((info >> 32)&0b111_1111) as usize)?, 
             physical_size_in_sectors_minus_one: ((info >> 16) & 0b1111_1111_1111_1111) as u16, 
@@ -278,11 +229,12 @@ impl BlockPointer {
     }
 
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data of the gang blocks once stitched together, and it is done before decompression
-    pub fn dereference(&mut self, mut vdevs: HashMap<usize, &mut dyn Vdev>) -> Result<Vec<u8>, ()> {
+    pub fn dereference(&mut self, vdevs: &mut HashMap<usize, &mut dyn Vdev>) -> Result<Vec<u8>, ()> {
         for dva in &self.dvas {
-            let Some(vdev) = vdevs.get_mut(&(dva.vdev_id as usize)) else { continue; };
-            if dva.is_gang { todo!("Implement GANG blocks!"); }
-            let Ok(data) = vdev.read(dva.parse_offset()+4*1024*1024, self.parse_physical_size() as usize) else { continue; };
+            let Ok(mut data) = dva.dereference(vdevs) else { continue; };
+            // Truncate data to it's physical length, as the dva will read the entire allocated length which might be bigger
+            data.resize(self.parse_physical_size().try_into().expect("overflow should be impossible"), 0);
+
             let computed_checksum = match self.checksum_method {
                 ChecksumMethod::Fletcher4 | ChecksumMethod::On => fletcher::do_fletcher4(&data),
                 ChecksumMethod::Fletcher2 => fletcher::do_fletcher2(&data),
@@ -304,7 +256,7 @@ impl BlockPointer {
                 _ => todo!("Implement {:?} compression!", self.compression_method),
             };
             assert!(data.len() == self.parse_logical_size() as usize);
-            // TODO: Verify checksum
+            println!("Using dva: {:?}", dva);
             return Ok(data);
         }
 
