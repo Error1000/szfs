@@ -137,7 +137,7 @@ fn read_string_and_size(data: &mut impl Iterator<Item = u8>) -> Option<(String, 
     let result = read_string_raw(data, result_size as usize);
     let padding_bytes = result_size_aligned - result_size;
     if padding_bytes > 0 {
-        let _ = data.nth(padding_bytes as usize-1)?; // Consume the padding bytes
+        let _ = data.skip_n_bytes(padding_bytes as usize)?; // Consume the padding bytes
     }
     result.map(|res|(res, result_size_aligned as usize+4))
 }
@@ -147,7 +147,7 @@ pub fn from_bytes_xdr(data: &mut impl Iterator<Item = u8>) -> Option<NVList> {
     // first byte is the encoding, second byte is the endianness, and the last two are reserved
     let xdr_encoding = data.next()?; 
     let xdr_endian = data.next()?;
-    let _ = data.nth(1); // Consume reserved bytes
+    let _ = data.skip_n_bytes(2); // Consume reserved bytes
     // println!("NVList xdr encoding: {}, xdr endianness: {}", xdr_encoding, xdr_endian);
     if xdr_endian != 1 || xdr_encoding != 1 { 
         println!("Expected xdr encoding 1, and endian 1 (a.k.a big-endian)!");
@@ -187,7 +187,7 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
                 +4 /*size of decode_size*/
                 +4 /*size of value_type*/
             );
-            let _ = data.nth(value_size as usize-1)?; // Consume value bytes
+            let _ = data.skip_n_bytes(value_size as usize)?; // Consume value bytes
 
             continue;
         };

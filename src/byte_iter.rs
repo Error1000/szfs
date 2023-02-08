@@ -13,12 +13,21 @@ pub trait ByteIter {
     fn read_u32_le(&mut self) -> Option<u32>;
     fn read_u64_be(&mut self) -> Option<u64>;
     fn read_u64_le(&mut self) -> Option<u64>;
+
+    fn skip_n_bytes(&mut self, n_bytes: usize) -> Option<()>;
 }
 
 impl<T> ByteIter for T
 where
     T: Iterator<Item = u8>,
 {
+    fn skip_n_bytes(&mut self, n_bytes: usize) -> Option<()> {
+        if n_bytes > 0 {
+            self.nth(n_bytes-1)?;
+        }    
+        Some(())
+    }
+
     fn read_u8(&mut self) -> Option<u8> {
         self.next()
     }

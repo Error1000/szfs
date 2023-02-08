@@ -40,12 +40,14 @@ impl DataVirtualAddress {
      self.offset_in_sectors*512
    }
 
-   pub fn dereference(&self, vdevs: &mut HashMap<usize, &mut dyn Vdev>) -> Result<Vec<u8>, ()> {
+   pub fn dereference(&self, vdevs: &mut HashMap<usize, &mut dyn Vdev>, size: usize) -> Result<Vec<u8>, ()> {
         if self.is_gang { todo!("Implement GANG blocks!"); }
         let Some(vdev) = vdevs.get_mut(&self.vdev_id.try_into().expect("overflow should be impossible")) else { return Err(()); };
-        vdev.read(self.parse_offset()+4*1024*1024, self.parse_allocated_size().try_into().expect("overflow should be impossible")) 
+        vdev.read(self.parse_offset()+4*1024*1024, size) 
    }
 }
+
+pub type Vdevs<'a> = HashMap<usize, &'a mut dyn Vdev>;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ChecksumMethod {
@@ -192,7 +194,7 @@ impl BlockPointer {
         }
 
         // Skip padding
-        data.nth((core::mem::size_of::<u64>()*3) - 1);
+        data.skip_n_bytes((core::mem::size_of::<u64>()*3));
         let logical_birth_txg = data.read_u64_le()?;
         let fill_count = data.read_u64_le()?;
         let checksum = [data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?];
@@ -229,9 +231,10 @@ impl BlockPointer {
     }
 
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data of the gang blocks once stitched together, and it is done before decompression
-    pub fn dereference(&mut self, vdevs: &mut HashMap<usize, &mut dyn Vdev>) -> Result<Vec<u8>, ()> {
+    pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
         for dva in &self.dvas {
-            let Ok(mut data) = dva.dereference(vdevs) else { continue; };
+            let Ok(mut data) = dva.dereference(vdevs, self.parse_physical_size().try_into().unwrap()) else { continue; };
+            
             // Truncate data to it's physical length, as the dva will read the entire allocated length which might be bigger
             data.resize(self.parse_physical_size().try_into().expect("overflow should be impossible"), 0);
 
@@ -242,7 +245,7 @@ impl BlockPointer {
             };
 
             if &computed_checksum != self.get_checksum() {
-                println!("Invalid checksum for dva: {:?}, ignoring.", dva);
+                println!("Invalid checksum for dva: {:?}, the checksum should be: {:#x?}, ignoring.", dva, self.checksum);
                 continue;
             }
 

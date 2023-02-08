@@ -1,4 +1,4 @@
-use crate::{zio::{self, ChecksumMethod, CompressionMethod}, byte_iter::ByteIter};
+use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer}, byte_iter::ByteIter};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Type {
@@ -108,6 +108,12 @@ pub struct Dnode {
     bonus_data: Vec<u8>
 }
 
+#[derive(Debug)]
+struct IndirectBlockTag {
+    id: usize, // With number is the block if you were to sequentially lay out all the blocks at this level
+    offset: usize // At what index in the block can you find the pointer to the next level 
+}
+
 impl Dnode {
     pub fn from_bytes(data: &mut impl Iterator<Item = u8>) -> Option<Dnode> {
         let dnode_type = Type::from_value(data.next()?.into())?;
@@ -121,10 +127,10 @@ impl Dnode {
         let data_blocksize_in_sectors = data.read_u16_le()?;
         let bonus_data_len = data.read_u16_le()?;
         let extra_slots = data.next()?;
-        let _ = data.nth(3-1)?; // Ignore 3 padding bytes
+        let _ = data.skip_n_bytes(3)?; // Ignore 3 padding bytes
         let max_indirect_block_id = data.read_u64_le()?;
         let total_allocated = data.read_u64_le()?; /* bytes (or sectors, depending on a flag) of disk space */
-        let _ = data.nth(4*core::mem::size_of::<u64>()-1)?; // Ignore 4 u64 paddings
+        let _ = data.skip_n_bytes(4*core::mem::size_of::<u64>())?; // Ignore 4 u64 paddings
 
         if flags & dnode_flag::HasSpillBlkptr != 0 {
             todo!("Implement spill blocks for dnodes!");
@@ -140,6 +146,9 @@ impl Dnode {
         // Read n_block_pointers block pointers
         let mut block_pointers = Vec::new();
         for _ in 0..n_block_pointers {
+            // NOTE: We try to read the block pointers even if we are not going to need them
+            // This means that we sometimes try to parse "unallocated" block pointers that might be all zeros
+            // but because we check the checksum and the endianness this will fail so it's fine
             if let Some(bp) = zio::BlockPointer::from_bytes_le(data) {
                 block_pointers.push(bp);
             }
@@ -161,7 +170,7 @@ impl Dnode {
         assert!(rounded_up_total_size == (usize::from(extra_slots)+1)*512); 
 
         let tail_padding_size = rounded_up_total_size-total_size;
-        let _ = data.nth(tail_padding_size-1)?;
+        let _ = data.skip_n_bytes(tail_padding_size)?;
 
         Some(Dnode { 
             typ: dnode_type, 
@@ -178,5 +187,80 @@ impl Dnode {
             block_pointers, 
             bonus_data 
         })
+    }
+
+    pub fn parse_data_block_size(&self) -> usize {
+        usize::from(self.data_blocksize_in_sectors)*512
+    }
+
+    pub fn parse_indirect_block_size(&self) -> usize {
+        2usize.pow(u32::from(self.indirect_blocksize_log2))
+    }
+
+    fn next_level_id_and_offset(&self, current_level_id: usize) -> IndirectBlockTag {
+        let blocks_per_indirect_block = self.parse_indirect_block_size()/BlockPointer::get_ondisk_size();
+        IndirectBlockTag {
+            id: current_level_id/blocks_per_indirect_block, 
+            offset: current_level_id%blocks_per_indirect_block
+        }
+    }
+
+    pub fn get_data_size(&self) -> usize {
+        usize::try_from(self.max_indirect_block_id).unwrap()*self.parse_data_block_size()
+    }
+
+    pub fn read_block(&mut self, block_id: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
+        if block_id > self.max_indirect_block_id.try_into().unwrap() { return Err(()); }
+
+        let mut levels: Vec<IndirectBlockTag> = Vec::new();
+        levels.push(self.next_level_id_and_offset(block_id));
+        for _ in 0..self.n_indirect_levels-1 {
+            levels.push(self.next_level_id_and_offset( levels.last().unwrap().id));
+        }
+
+        // Travel back down the levels
+        let top_level = levels.pop().unwrap();
+        let mut indirect_block_data = self.block_pointers[top_level.id].dereference(vdevs)?;
+        let mut next_block_pointer = {
+            let mut iter = indirect_block_data.iter().copied();
+            iter.skip_n_bytes(BlockPointer::get_ondisk_size()*top_level.offset);
+            BlockPointer::from_bytes_le(&mut iter).ok_or(())?
+        };
+
+        for _ in 1..self.n_indirect_levels-1 {
+            indirect_block_data = next_block_pointer.dereference(vdevs)?;
+            let cur_level = levels.pop().unwrap();
+            next_block_pointer = {
+                let mut iter = indirect_block_data.iter().copied();
+                iter.skip_n_bytes(BlockPointer::get_ondisk_size()*cur_level.offset);
+                BlockPointer::from_bytes_le(&mut iter).ok_or(())?
+            };
+        }
+
+        let block_data = next_block_pointer.dereference(vdevs)?;
+        assert!(block_data.len() == self.parse_data_block_size());
+        Ok(block_data)
+    }
+    
+    pub fn read(&mut self, offset: usize, size: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
+        let mut result: Vec<u8> = Vec::new();
+        let first_data_block_id = offset/self.parse_data_block_size();
+        let first_data_block_offset = offset%self.parse_data_block_size();
+        let first_data_block = self.read_block(first_data_block_id, vdevs)?;
+        result.extend(first_data_block.iter().skip(first_data_block_offset));
+
+        if result.len() > size {
+            result.resize(size, 0);
+            return Ok(result);
+        }
+
+        let size = size-result.len();
+        let blocks_to_read = if size%self.parse_data_block_size() == 0 { size/self.parse_data_block_size() } else { (size/self.parse_data_block_size())+1 };
+        for i in 1..blocks_to_read+1 {
+            result.extend(self.read_block(first_data_block_id+i, vdevs)?);
+        }
+
+        result.resize(size, 0);
+        Ok(result)
     }
 }

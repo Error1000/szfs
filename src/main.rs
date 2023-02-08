@@ -213,9 +213,12 @@ fn main() {
 
     let (active_uberblock, mos) = uberblock_search_info.unwrap();
 
-    let mos = dmu::Dnode::from_bytes(&mut mos.iter().copied());
+    let mut mos = dmu::Dnode::from_bytes(&mut mos.iter().copied()).unwrap();
 
     println!("{:?}", active_uberblock);
-    println!("{:x?}", mos);
+    println!("{:?}", mos);
+    let mos_data = mos.read(0, mos.get_data_size(), &mut vdevs).unwrap();
+    println!("Len: {:x?} bytes!", mos_data.len());
+    println!("{:x?}", mos_data);
     // std::io::stdout().write_all(&mos).unwrap();
 }
