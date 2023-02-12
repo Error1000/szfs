@@ -1,4 +1,4 @@
-use std::{fs::File, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap};
+use std::{fs::{File, OpenOptions}, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap};
 
 use byte_iter::ByteIter;
 
@@ -155,13 +155,13 @@ impl Uberblock {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        println!("Usage: {} (device)", args[0]);
-        return;
-    }
+    // let args: Vec<String> = std::env::args().collect();
+    // if args.len() < 2 {
+    //     println!("Usage: {} (device)", args[0]);
+    //     return;
+    // }
 
-    let Ok(vdev) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&args[1]) 
+    let Ok(vdev) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/disk1.raw") 
     else {
         println!("Failed to open vdev!");
         return;
@@ -217,7 +217,4 @@ fn main() {
 
     println!("{:?}", active_uberblock);
     println!("{:?}", mos);
-    let mos_data = mos.read(1*512, 512, &mut vdevs).unwrap();
-    println!("Len: {:x?} bytes!", mos_data.len());
-    std::fs::OpenOptions::new().create(true).write(true).open("./mos_data_block.raw").unwrap().write_all(&mos_data).unwrap();
 }

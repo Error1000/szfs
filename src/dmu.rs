@@ -115,6 +115,9 @@ struct IndirectBlockTag {
 }
 
 impl Dnode {
+    // Note: This will always read a multiple of 512 bytes as all dnodes have a size that is a multiple of 512 which was
+    // the old size of one "slot", however newer implementations allow dnodes to take up multiple slots so therefore a multiple of 512.
+    // Source: https://github.com/openzfs/zfs/blob/master/include/sys/dnode.h#L188
     pub fn from_bytes(data: &mut impl Iterator<Item = u8>) -> Option<Dnode> {
         let dnode_type = Type::from_value(data.next()?.into())?;
         let indirect_blocksize_log2 = data.next()?;
@@ -166,7 +169,7 @@ impl Dnode {
         // Round up the size to the next multiple of 512 bytes
         let rounded_up_total_size = if total_size%512 == 0 { total_size } else { ((total_size/512)+1)*512 };
 
-        // Check that the size of the dnode calculated using the n_block_pointers and bonus_data_len is the same as the one calculated form the number of slots this dnode takes up
+        // Sanity check that the size of the dnode calculated using the n_block_pointers and bonus_data_len is the same as the one calculated form the number of slots this dnode takes up
         assert!(rounded_up_total_size == (usize::from(extra_slots)+1)*512); 
 
         let tail_padding_size = rounded_up_total_size-total_size;
@@ -206,11 +209,18 @@ impl Dnode {
     }
 
     pub fn get_data_size(&self) -> usize {
-        usize::try_from(self.max_indirect_block_id).unwrap()*self.parse_data_block_size()
+        usize::try_from(self.max_indirect_block_id+1).unwrap()*self.parse_data_block_size()
     }
 
     pub fn read_block(&mut self, block_id: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
         if block_id > self.max_indirect_block_id.try_into().unwrap() { return Err(()); }
+        assert!(self.n_indirect_levels >= 1);
+
+        if self.n_indirect_levels == 1 { // There is no indirection
+            return Ok(self.block_pointers[block_id].dereference(vdevs)?);
+        }
+
+        // If we got here then n_indirect_levels must be 2 or greater
 
         let mut levels: Vec<IndirectBlockTag> = Vec::new();
         levels.push(self.next_level_id_and_offset(block_id));
@@ -254,13 +264,14 @@ impl Dnode {
             return Ok(result);
         }
 
-        let size = size-result.len();
-        let blocks_to_read = if size%self.parse_data_block_size() == 0 { size/self.parse_data_block_size() } else { (size/self.parse_data_block_size())+1 };
+        let size_remaining = size-result.len();
+        let blocks_to_read = if size_remaining%self.parse_data_block_size() == 0 { size_remaining/self.parse_data_block_size() } else { (size_remaining/self.parse_data_block_size())+1 };
         for i in 1..=blocks_to_read {
             result.extend(self.read_block(first_data_block_id+i, vdevs)?);
         }
 
         result.resize(size, 0);
+        assert!(result.len() == size);
         Ok(result)
     }
 }
