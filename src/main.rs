@@ -217,8 +217,7 @@ fn main() {
 
     println!("{:?}", active_uberblock);
     println!("{:?}", mos);
-    let mos_data = mos.read(0, mos.get_data_size(), &mut vdevs).unwrap();
+    let mos_data = mos.read(1*512, 512, &mut vdevs).unwrap();
     println!("Len: {:x?} bytes!", mos_data.len());
-    println!("{:x?}", mos_data);
-    // std::io::stdout().write_all(&mos).unwrap();
+    std::fs::OpenOptions::new().create(true).write(true).open("./mos_data_block.raw").unwrap().write_all(&mos_data).unwrap();
 }

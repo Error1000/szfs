@@ -230,13 +230,10 @@ impl BlockPointer {
         &self.checksum
     }
 
-    // NOTE: zfs always checksums the data once put together, so the checksum is of the data of the gang blocks once stitched together, and it is done before decompression
+    // NOTE: zfs always checksums the data once put together, so the checksum is of the data pointed to by the gang blocks once stitched together, and it is done before decompression
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
         for dva in &self.dvas {
-            let Ok(mut data) = dva.dereference(vdevs, self.parse_physical_size().try_into().unwrap()) else { continue; };
-            
-            // Truncate data to it's physical length, as the dva will read the entire allocated length which might be bigger
-            data.resize(self.parse_physical_size().try_into().expect("overflow should be impossible"), 0);
+            let Ok(data) = dva.dereference(vdevs, self.parse_physical_size().try_into().unwrap()) else { continue; };
 
             let computed_checksum = match self.checksum_method {
                 ChecksumMethod::Fletcher4 | ChecksumMethod::On => fletcher::do_fletcher4(&data),

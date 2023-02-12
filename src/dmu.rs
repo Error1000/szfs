@@ -214,7 +214,7 @@ impl Dnode {
 
         let mut levels: Vec<IndirectBlockTag> = Vec::new();
         levels.push(self.next_level_id_and_offset(block_id));
-        for _ in 0..self.n_indirect_levels-1 {
+        for _ in 1..self.n_indirect_levels-1 {
             levels.push(self.next_level_id_and_offset( levels.last().unwrap().id));
         }
 
@@ -249,14 +249,14 @@ impl Dnode {
         let first_data_block = self.read_block(first_data_block_id, vdevs)?;
         result.extend(first_data_block.iter().skip(first_data_block_offset));
 
-        if result.len() > size {
+        if result.len() >= size {
             result.resize(size, 0);
             return Ok(result);
         }
 
         let size = size-result.len();
         let blocks_to_read = if size%self.parse_data_block_size() == 0 { size/self.parse_data_block_size() } else { (size/self.parse_data_block_size())+1 };
-        for i in 1..blocks_to_read+1 {
+        for i in 1..=blocks_to_read {
             result.extend(self.read_block(first_data_block_id+i, vdevs)?);
         }
 
