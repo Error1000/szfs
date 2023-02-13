@@ -161,7 +161,7 @@ pub struct BlockPointer {
     level: usize,
     fill: u64,
     logical_birth_txg: u64,
-    typ: dmu::Type,
+    typ: dmu::ObjType,
     checksum_method: ChecksumMethod,
     compression_method: CompressionMethod,
     physical_size_in_sectors_minus_one: u16,
@@ -194,7 +194,7 @@ impl BlockPointer {
         }
 
         // Skip padding
-        data.skip_n_bytes((core::mem::size_of::<u64>()*3));
+        data.skip_n_bytes(core::mem::size_of::<u64>()*3);
         let logical_birth_txg = data.read_u64_le()?;
         let fill_count = data.read_u64_le()?;
         let checksum = [data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?];
@@ -204,7 +204,7 @@ impl BlockPointer {
             level: ((info >> 56)&0b1_1111) as usize, 
             fill: fill_count,
             logical_birth_txg,
-            typ: dmu::Type::from_value(((info >> 48)&0b1111_1111) as usize)?, 
+            typ: dmu::ObjType::from_value(((info >> 48)&0b1111_1111) as usize)?, 
             checksum_method: ChecksumMethod::from_value(((info >> 40)&0b1111_1111) as usize)?, 
             compression_method: CompressionMethod::from_value(((info >> 32)&0b111_1111) as usize)?, 
             physical_size_in_sectors_minus_one: ((info >> 16) & 0b1111_1111_1111_1111) as u16, 

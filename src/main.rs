@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::{fs::{File, OpenOptions}, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap};
 
 use byte_iter::ByteIter;
@@ -5,6 +6,7 @@ use byte_iter::ByteIter;
 mod nvlist;
 mod byte_iter;
 mod zio;
+mod zil;
 mod dmu;
 mod fletcher;
 mod lz4;
@@ -212,8 +214,7 @@ fn main() {
     };
 
     let (active_uberblock, mos) = uberblock_search_info.unwrap();
-
-    let mut mos = dmu::Dnode::from_bytes(&mut mos.iter().copied()).unwrap();
+    let mos = dmu::ObjSet::from_bytes_le(&mut mos.iter().copied()).unwrap();
 
     println!("{:?}", active_uberblock);
     println!("{:?}", mos);

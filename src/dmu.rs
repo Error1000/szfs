@@ -1,7 +1,7 @@
-use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer}, byte_iter::ByteIter};
+use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer}, byte_iter::ByteIter, zil::ZilHeader};
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Type {
+pub enum ObjType {
     None = 0,
     Directory = 1,
     ObjectArray = 2,
@@ -29,7 +29,7 @@ pub enum Type {
     ZVolProperties = 24
 }
 
-impl Type {
+impl ObjType {
     pub fn from_value(value: usize) -> Option<Self> {
         Some(match value {
             0  => Self::None,
@@ -75,9 +75,9 @@ pub enum BonusType {
 impl BonusType {
     pub fn from_value(value: usize) -> Option<Self> {
         Some(match value {
-            0 => Self::None,
-            4 => Self::PackedNVListSize,
-            7 => Self::SpaceMapHeader,
+            0  => Self::None,
+            4  => Self::PackedNVListSize,
+            7  => Self::SpaceMapHeader,
             12 => Self::DSLDataset,
             16 => Self::DSLObjSet,
             17 => Self::ZNode,
@@ -93,7 +93,7 @@ mod dnode_flag {
 
 #[derive(Debug)]
 pub struct Dnode {
-    typ: Type,
+    typ: ObjType,
     indirect_blocksize_log2: u8,
     n_indirect_levels: u8,
     bonus_data_type: BonusType,
@@ -115,11 +115,16 @@ struct IndirectBlockTag {
 }
 
 impl Dnode {
+    pub fn get_ondisk_size(&self) -> usize {
+        usize::from(self.num_slots)*512
+    }
+
     // Note: This will always read a multiple of 512 bytes as all dnodes have a size that is a multiple of 512 which was
     // the old size of one "slot", however newer implementations allow dnodes to take up multiple slots so therefore a multiple of 512.
     // Source: https://github.com/openzfs/zfs/blob/master/include/sys/dnode.h#L188
-    pub fn from_bytes(data: &mut impl Iterator<Item = u8>) -> Option<Dnode> {
-        let dnode_type = Type::from_value(data.next()?.into())?;
+    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<Dnode>
+    where Iter: Iterator<Item = u8> + Clone {
+        let dnode_type = ObjType::from_value(data.next()?.into())?;
         let indirect_blocksize_log2 = data.next()?;
         let n_indirect_levels = data.next()?;
         let n_block_pointers = data.next()?;
@@ -131,6 +136,8 @@ impl Dnode {
         let bonus_data_len = data.read_u16_le()?;
         let extra_slots = data.next()?;
         let _ = data.skip_n_bytes(3)?; // Ignore 3 padding bytes
+        // We have read 16 bytes up until now
+
         let max_indirect_block_id = data.read_u64_le()?;
         let total_allocated = data.read_u64_le()?; /* bytes (or sectors, depending on a flag) of disk space */
         let _ = data.skip_n_bytes(4*core::mem::size_of::<u64>())?; // Ignore 4 u64 paddings
@@ -152,9 +159,10 @@ impl Dnode {
             // NOTE: We try to read the block pointers even if we are not going to need them
             // This means that we sometimes try to parse "unallocated" block pointers that might be all zeros
             // but because we check the checksum and the endianness this will fail so it's fine
-            if let Some(bp) = zio::BlockPointer::from_bytes_le(data) {
+            if let Some(bp) = zio::BlockPointer::from_bytes_le(&mut data.clone()) {
                 block_pointers.push(bp);
             }
+            let _ = data.skip_n_bytes(zio::BlockPointer::get_ondisk_size())?;
         }
 
         let mut bonus_data = Vec::new();
@@ -273,5 +281,53 @@ impl Dnode {
         result.resize(size, 0);
         assert!(result.len() == size);
         Ok(result)
+    }
+}
+
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ObjSetType {
+    None = 0,
+    Meta = 1,
+    Zfs  = 2,
+    Zvol = 3
+}
+
+impl ObjSetType {
+    pub fn from_value(value: usize) -> Option<Self> {
+        Some(match value {
+            0 => Self::None,
+            1 => Self::Meta,
+            2 => Self::Zfs,
+            3 => Self::Zvol,
+            _ => return None
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct ObjSet {
+    metadnode: Dnode,
+    zil: Option<ZilHeader>,
+    typ: ObjSetType
+}
+
+impl ObjSet {
+    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<ObjSet>
+    where Iter: Iterator<Item = u8> + Clone {
+        let metadnode = Dnode::from_bytes_le(data)?;
+        let zil = ZilHeader::from_bytes_le(&mut data.clone());
+        data.skip_n_bytes(ZilHeader::get_ondisk_size());
+
+        let typ = ObjSetType::from_value(data.read_u64_le()?.try_into().ok()?)?;
+        // Consume padding up to 1k
+        let size = metadnode.get_ondisk_size() + ZilHeader::get_ondisk_size() + core::mem::size_of::<u64>();
+        let remaining = 1024 - size;
+        let _ = data.skip_n_bytes(remaining)?;
+        Some(ObjSet { 
+            metadnode, 
+            zil, 
+            typ
+        })
     }
 }
