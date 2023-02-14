@@ -1,4 +1,4 @@
-use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer}, byte_iter::ByteIter, zil::ZilHeader};
+use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer, Vdevs}, byte_iter::ByteIter, zil::ZilHeader};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ObjType {
@@ -119,6 +119,12 @@ impl Dnode {
         usize::from(self.num_slots)*512
     }
 
+    pub fn get_n_slots_from_bytes_le(mut data: impl Iterator<Item = u8>) -> Option<usize> {
+        data.skip_n_bytes(12)?;
+        let extra_slots = data.next()?;
+        Some(usize::from(extra_slots)+1)
+    }
+
     // Note: This will always read a multiple of 512 bytes as all dnodes have a size that is a multiple of 512 which was
     // the old size of one "slot", however newer implementations allow dnodes to take up multiple slots so therefore a multiple of 512.
     // Source: https://github.com/openzfs/zfs/blob/master/include/sys/dnode.h#L188
@@ -135,12 +141,12 @@ impl Dnode {
         let data_blocksize_in_sectors = data.read_u16_le()?;
         let bonus_data_len = data.read_u16_le()?;
         let extra_slots = data.next()?;
-        let _ = data.skip_n_bytes(3)?; // Ignore 3 padding bytes
+        data.skip_n_bytes(3)?; // Ignore 3 padding bytes
         // We have read 16 bytes up until now
 
         let max_indirect_block_id = data.read_u64_le()?;
         let total_allocated = data.read_u64_le()?; /* bytes (or sectors, depending on a flag) of disk space */
-        let _ = data.skip_n_bytes(4*core::mem::size_of::<u64>())?; // Ignore 4 u64 paddings
+        data.skip_n_bytes(4*core::mem::size_of::<u64>())?; // Ignore 4 u64 paddings
 
         if flags & dnode_flag::HasSpillBlkptr != 0 {
             todo!("Implement spill blocks for dnodes!");
@@ -162,7 +168,7 @@ impl Dnode {
             if let Some(bp) = zio::BlockPointer::from_bytes_le(&mut data.clone()) {
                 block_pointers.push(bp);
             }
-            let _ = data.skip_n_bytes(zio::BlockPointer::get_ondisk_size())?;
+            data.skip_n_bytes(zio::BlockPointer::get_ondisk_size())?;
         }
 
         let mut bonus_data = Vec::new();
@@ -181,7 +187,7 @@ impl Dnode {
         assert!(rounded_up_total_size == (usize::from(extra_slots)+1)*512); 
 
         let tail_padding_size = rounded_up_total_size-total_size;
-        let _ = data.skip_n_bytes(tail_padding_size)?;
+        data.skip_n_bytes(tail_padding_size)?;
 
         Some(Dnode { 
             typ: dnode_type, 
@@ -260,7 +266,9 @@ impl Dnode {
         Ok(block_data)
     }
     
+    // Note: Reading 0 bytes will *always* succeed
     pub fn read(&mut self, offset: usize, size: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
+        if size == 0 { return Ok(Vec::new()); }
         let mut result: Vec<u8> = Vec::new();
         let first_data_block_id = offset/self.parse_data_block_size();
         let first_data_block_offset = offset%self.parse_data_block_size();
@@ -323,11 +331,19 @@ impl ObjSet {
         // Consume padding up to 1k
         let size = metadnode.get_ondisk_size() + ZilHeader::get_ondisk_size() + core::mem::size_of::<u64>();
         let remaining = 1024 - size;
-        let _ = data.skip_n_bytes(remaining)?;
+        data.skip_n_bytes(remaining)?;
         Some(ObjSet { 
             metadnode, 
             zil, 
             typ
         })
     }
+
+    pub fn get_dnode_at(&mut self, index: usize, vdevs: &mut Vdevs) -> Option<Dnode> {
+        let mut data = self.metadnode.read(index*512, 512, vdevs).ok()?;
+        let dnode_slots = Dnode::get_n_slots_from_bytes_le(data.iter().copied())?;
+        data.extend(self.metadnode.read((index+1)*512, (dnode_slots-1)*512, vdevs).ok()?.iter());
+        Dnode::from_bytes_le(&mut data.iter().copied())
+    }
+
 }

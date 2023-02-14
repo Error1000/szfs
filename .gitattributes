@@ -1,1 +1,2 @@
+test/disk1.raw filter=lfs diff=lfs merge=lfs -text
 disk1.raw filter=lfs diff=lfs merge=lfs -text

@@ -17,7 +17,7 @@ impl ZilHeader {
             highest_replayed_seq_number: data.read_u64_le()?,
             log: BlockPointer::from_bytes_le(data)?
         };
-        let _ = data.skip_n_bytes(core::mem::size_of::<u64>()*6)?;
+        data.skip_n_bytes(core::mem::size_of::<u64>()*6)?;
         Some(res)
     }
 }
