@@ -102,7 +102,7 @@ impl VdevLabel {
     }
 
     pub fn get_raw_uberblock(&self, index: usize) -> &[u8] {
-        if index >= self.get_raw_uberblock_count() { panic!("Attempt to get uberblock pas the end of the uberblock array!"); }
+        if index >= self.get_raw_uberblock_count() { panic!("Attempt to get uberblock past the end of the uberblock array!"); }
         &self.uberblocks_raw[index*self.get_raw_uberblock_size()..(index+1)*self.get_raw_uberblock_size()]
     }
 
@@ -218,9 +218,8 @@ fn main() {
     let mut mos = dmu::ObjSet::from_bytes_le(&mut mos_data.iter().copied()).expect("Mos should be valid!");
     let mut object_directory = mos.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!");
     let object_directory_data = object_directory.read(0, object_directory.get_data_size(), &mut vdevs).unwrap();
-    println!("Zap size: {}, zap block size: {}", object_directory_data.len(), object_directory.parse_data_block_size());
-    let zap_header = zap::ZapHeader::from_bytes_le(&mut object_directory_data.iter().copied(), object_directory.parse_data_block_size());
-
+    let zap_header = zap::ZapHeader::from_bytes_le(&mut object_directory_data.iter().copied(), object_directory.parse_data_block_size()).unwrap();
+    
     println!("{:?}", active_uberblock);
     println!("{:?}", zap_header);
 }
