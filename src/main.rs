@@ -217,9 +217,12 @@ fn main() {
     let (active_uberblock, mos_data) = uberblock_search_info.unwrap();
     let mut mos = dmu::ObjSet::from_bytes_le(&mut mos_data.iter().copied()).expect("Mos should be valid!");
     let mut object_directory = mos.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!");
-    let object_directory_data = object_directory.read(0, object_directory.get_data_size(), &mut vdevs).unwrap();
-    let zap_header = zap::ZapHeader::from_bytes_le(&mut object_directory_data.iter().copied(), object_directory.parse_data_block_size()).unwrap();
-    
+    let object_directory_data1 = object_directory.read_block(0, &mut vdevs).unwrap();
+    let zap_header = zap::ZapHeader::from_bytes_le(&mut object_directory_data1.iter().copied(), object_directory.parse_data_block_size()).unwrap().unwrap_fat();
+    let some_leaf_blkid = zap_header.read_hash_table_at(0);
+    let object_directory_data2 = object_directory.read_block(some_leaf_blkid.try_into().unwrap(), &mut vdevs).unwrap();
+    let some_leaf = zap::ZapLeaf::from_bytes_le(&mut object_directory_data2.iter().copied(), object_directory.parse_data_block_size()).unwrap();
     println!("{:?}", active_uberblock);
     println!("{:?}", zap_header);
+    println!("{:?}", some_leaf);
 }

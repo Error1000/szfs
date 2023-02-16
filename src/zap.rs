@@ -41,12 +41,40 @@ impl ZapLeafChunkType {
     }
 }
 
+#[derive(Debug)]
 pub struct ZapLeaf {
     header: ZapLeafHeader,
     hash_table: Vec<u16>,
-    chunk: Vec<ZapLeafChunk>,
+    chunks: Vec<ZapLeafChunk>,
 }
 
+impl ZapLeaf {
+    fn get_hash_table_numentries(block_size: usize) -> usize {
+        // https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L77
+        block_size/32
+    }
+
+    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>, block_size: usize) -> Option<ZapLeaf> {
+        let header = ZapLeafHeader::from_bytes_le(data)?;
+        let mut hash_table = vec![0u16; Self::get_hash_table_numentries(block_size)];
+        for value in hash_table.iter_mut() {
+            *value = data.read_u16_le()?;
+        }
+
+        // Calculate length of chunk array
+        // https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L45
+        let remaining_bytes = block_size - ZapLeafHeader::get_ondisk_size() - Self::get_hash_table_numentries(block_size)*core::mem::size_of::<u16>();
+        let nchunks = remaining_bytes/ZapLeafChunk::get_ondisk_size();
+        let mut chunks = Vec::<ZapLeafChunk>::new();
+        for _ in 0..nchunks{
+            chunks.push(ZapLeafChunk::from_bytes_le(data)?);
+        }
+        
+        Some(ZapLeaf { header, hash_table, chunks })
+    }
+}
+
+#[derive(Debug)]
 pub struct ZapLeafHeader {
     next_leaf: u64,
     prefix: u64,
@@ -84,6 +112,7 @@ impl ZapLeafHeader {
     }
 }
 
+#[derive(Debug)]
 pub enum ZapLeafChunk {
     Entry {
         int_size: u8,
@@ -111,6 +140,7 @@ impl ZapLeafChunk {
     }
 
     pub fn get_byte_array_size() -> usize {
+        // https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L62
         Self::get_ondisk_size()-3
     }
 
