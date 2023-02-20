@@ -91,12 +91,12 @@ mod dnode_flag {
     pub const HasSpillBlkptr: u8 = 1 << 2;
 }
 
+
+// General dnode data, not specific to any type of dnode
 #[derive(Debug)]
-pub struct Dnode {
-    typ: ObjType,
+pub struct DNodeBase {
     indirect_blocksize_log2: u8,
     n_indirect_levels: u8,
-    bonus_data_type: BonusType,
     checksum_method: zio::ChecksumMethod,
     compression_method: zio::CompressionMethod,
     data_blocksize_in_sectors: u16,
@@ -108,13 +108,21 @@ pub struct Dnode {
     bonus_data: Vec<u8>
 }
 
+
+#[derive(Debug)]
+pub struct DNodeObjectDirectory (pub DNodeBase);
+
+
+#[derive(Debug)]
+pub struct DNodeDSLDirectory (pub DNodeBase);
+
 #[derive(Debug)]
 struct IndirectBlockTag {
     id: usize, // Which number is the block if you were to sequentially lay out all the blocks at this level
     offset: usize // At what index in the block can you find the pointer to the next level 
 }
 
-impl Dnode {
+impl DNodeBase {
     pub fn get_ondisk_size(&self) -> usize {
         usize::from(self.num_slots)*512
     }
@@ -128,7 +136,7 @@ impl Dnode {
     // Note: This will always read a multiple of 512 bytes as all dnodes have a size that is a multiple of 512 which was
     // the old size of one "slot", however newer implementations allow dnodes to take up multiple slots so therefore a multiple of 512.
     // Source: https://github.com/openzfs/zfs/blob/master/include/sys/dnode.h#L188
-    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<Dnode>
+    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<(DNodeBase, ObjType, BonusType)>
     where Iter: Iterator<Item = u8> + Clone {
         let dnode_type = ObjType::from_value(data.next()?.into())?;
         let indirect_blocksize_log2 = data.next()?;
@@ -189,11 +197,9 @@ impl Dnode {
         let tail_padding_size = rounded_up_total_size-total_size;
         data.skip_n_bytes(tail_padding_size)?;
 
-        Some(Dnode { 
-            typ: dnode_type, 
+        Some((DNodeBase { 
             indirect_blocksize_log2, 
-            n_indirect_levels, 
-            bonus_data_type, 
+            n_indirect_levels,  
             checksum_method, 
             compression_method, 
             data_blocksize_in_sectors, 
@@ -203,7 +209,7 @@ impl Dnode {
             total_allocated_is_in_bytes: (flags & dnode_flag::UsedAmountIsInBytes) != 0,
             block_pointers, 
             bonus_data 
-        })
+        }, dnode_type, bonus_data_type))
     }
 
     pub fn parse_data_block_size(&self) -> usize {
@@ -293,6 +299,55 @@ impl Dnode {
 }
 
 
+#[derive(Debug)]
+pub enum DNode {
+    ObjectDirectory(DNodeObjectDirectory),
+    DSLDirectory(DNodeDSLDirectory)
+}
+
+impl DNode {
+    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<DNode>
+    where Iter: Iterator<Item = u8> + Clone {
+        let (dnode_base, dnode_type, bonus_data_type) = DNodeBase::from_bytes_le(data)?;
+        Some(match dnode_type {
+            ObjType::None => todo!(),
+            ObjType::ObjectDirectory => DNode::ObjectDirectory(DNodeObjectDirectory(dnode_base)),
+            ObjType::ObjectArray => todo!(),
+            ObjType::PackedNVList => todo!(),
+            ObjType::PackedNVListSize => todo!(),
+            ObjType::BlockPointerList => todo!(),
+            ObjType::BlockPointerListHeader => todo!(),
+            ObjType::SpaceMapHeader => todo!(),
+            ObjType::SpaceMap => todo!(),
+            ObjType::IntentLog => todo!(),
+            ObjType::DNode => todo!(),
+            ObjType::ObjSet => todo!(),
+            ObjType::DSLDataset => {
+                match bonus_data_type {
+                    BonusType::None => todo!(),
+                    BonusType::PackedNVListSize => todo!(),
+                    BonusType::SpaceMapHeader => todo!(),
+                    BonusType::DSLDirectory => DNode::DSLDirectory(DNodeDSLDirectory(dnode_base)),
+                    BonusType::DSLDataset => todo!(),
+                    BonusType::ZNode => todo!(),
+                }
+            },
+            ObjType::DSLDatasetChildMap => todo!(),
+            ObjType::ObjSetSnapshotMap => todo!(),
+            ObjType::DSLProperties => todo!(),
+            ObjType::DSLObjSet => todo!(),
+            ObjType::ZNode => todo!(),
+            ObjType::AcessControlList => todo!(),
+            ObjType::PlainFileContents => todo!(),
+            ObjType::DirectoryContents => todo!(),
+            ObjType::MasterNode => todo!(),
+            ObjType::DeleteQueue => todo!(),
+            ObjType::ZVol => todo!(),
+            ObjType::ZVolProperties => todo!(),
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ObjSetType {
     None = 0,
@@ -315,7 +370,7 @@ impl ObjSetType {
 
 #[derive(Debug)]
 pub struct ObjSet {
-    metadnode: Dnode,
+    metadnode: DNodeBase,
     zil: Option<ZilHeader>,
     typ: ObjSetType
 }
@@ -323,7 +378,7 @@ pub struct ObjSet {
 impl ObjSet {
     pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<ObjSet>
     where Iter: Iterator<Item = u8> + Clone {
-        let metadnode = Dnode::from_bytes_le(data)?;
+        let (metadnode, metadnode_type, _) = DNodeBase::from_bytes_le(data)?;
         let zil = ZilHeader::from_bytes_le(&mut data.clone());
         data.skip_n_bytes(ZilHeader::get_ondisk_size());
 
@@ -339,11 +394,13 @@ impl ObjSet {
         })
     }
 
-    pub fn get_dnode_at(&mut self, index: usize, vdevs: &mut Vdevs) -> Option<Dnode> {
+    pub fn get_dnode_at(&mut self, index: usize, vdevs: &mut Vdevs) -> Option<DNode> {
         let mut data = self.metadnode.read(index*512, 512, vdevs).ok()?;
-        let dnode_slots = Dnode::get_n_slots_from_bytes_le(data.iter().copied())?;
+        let dnode_slots = DNodeBase::get_n_slots_from_bytes_le(data.iter().copied())?;
         data.extend(self.metadnode.read((index+1)*512, (dnode_slots-1)*512, vdevs).ok()?.iter());
-        Dnode::from_bytes_le(&mut data.iter().copied())
+        DNode::from_bytes_le(&mut data.iter().copied())
     }
 
 }
+
+

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
 use crate::byte_iter::ByteIter;
-use crate::dmu::Dnode;
+use crate::dmu::DNodeObjectDirectory;
 use crate::zio::Vdevs;
 
 #[derive(Debug, PartialEq)]
@@ -362,7 +362,7 @@ pub enum ZapHeader {
     MicroZap
 }
 
-impl ZapHeader{
+impl ZapHeader {
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>, block_size: usize) -> Option<ZapHeader> {
         let zap_type = ZapType::from_value(data.read_u64_le()?)?;
         return match zap_type {
@@ -387,14 +387,14 @@ impl ZapHeader{
         }
     }
 
-    pub fn dump_contents(&self, parent_dnode: &mut Dnode, vdevs: &mut Vdevs) -> HashMap<String, Value> {
+    pub fn dump_contents(&self, parent_dnode: &mut DNodeObjectDirectory, vdevs: &mut Vdevs) -> HashMap<String, Value> {
         let mut result = HashMap::<String, Value>::new();
         let header = self.unwrap_fat();
         let mut leafs_read = HashSet::<u64>::new();
         for i in 0..header.get_hash_table_size() {
             let block_id = header.read_hash_table_at(i);
             if !leafs_read.insert(block_id) { continue; }
-            let leaf = ZapLeaf::from_bytes_le(&mut parent_dnode.read_block(block_id as usize, vdevs).unwrap().iter().copied(), parent_dnode.parse_data_block_size()).unwrap();
+            let leaf = ZapLeaf::from_bytes_le(&mut parent_dnode.0.read_block(block_id as usize, vdevs).unwrap().iter().copied(), parent_dnode.0.parse_data_block_size()).unwrap();
             leaf.dump_contents_into(&mut result);
         }
 
