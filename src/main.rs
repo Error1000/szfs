@@ -216,14 +216,16 @@ fn main() {
 
     let (active_uberblock, mos_data) = uberblock_search_info.unwrap();
     let mut mos = dmu::ObjSet::from_bytes_le(&mut mos_data.iter().copied()).expect("Mos should be valid!");
+    
     let mut object_directory = mos.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!");
-    let object_directory_data1 = object_directory.read_block(0, &mut vdevs).unwrap();
-    let zap_header = zap::ZapHeader::from_bytes_le(&mut object_directory_data1.iter().copied(), object_directory.parse_data_block_size()).unwrap().unwrap_fat();
-    let some_leaf_blkid = zap_header.read_hash_table_at(0);
-    let object_directory_data2 = object_directory.read_block(some_leaf_blkid.try_into().unwrap(), &mut vdevs).unwrap();
-    let some_leaf = zap::ZapLeaf::from_bytes_le(&mut object_directory_data2.iter().copied(), object_directory.parse_data_block_size()).unwrap();
+    let zap_header_data = object_directory.read_block(0, &mut vdevs).unwrap();
+    let zap_header = zap::ZapHeader::from_bytes_le(&mut zap_header_data.iter().copied(), object_directory.parse_data_block_size()).unwrap();
+    let zap_data = zap_header.dump_contents(&mut object_directory, &mut vdevs);
     println!("{:?}", active_uberblock);
-    let mut extracted_data = HashMap::<String, zap::Value>::new();
-    some_leaf.dump_contents_into(&mut extracted_data);
-    println!("{:?}", extracted_data);
+    let zap::Value::U64(root_dataset_id) = zap_data["root_dataset"] else {
+        panic!("Couldn't read root_dataset id!");
+    };
+    
+    let root_dataset = mos.get_dnode_at(root_dataset_id as usize, &mut vdevs).unwrap();
+    println!("{:?}", root_dataset);
 }

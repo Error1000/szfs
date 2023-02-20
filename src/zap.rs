@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
 use crate::byte_iter::ByteIter;
+use crate::dmu::Dnode;
+use crate::zio::Vdevs;
 
 #[derive(Debug, PartialEq)]
 #[repr(u64)]
@@ -341,6 +343,12 @@ impl FatZapHeader {
         })
     }
 
+    pub fn get_hash_table_size(&self) -> usize {
+        if self.table.block_id == 0 {
+            return self.embbeded_leafs_pointer_table.len();
+        } else { todo!("Implement non-embedded fat zap tables!"); }
+    }
+
     pub fn read_hash_table_at(&self, index: usize) -> u64 {
         if self.table.block_id == 0 {
             return self.embbeded_leafs_pointer_table[index];
@@ -372,10 +380,24 @@ impl ZapHeader{
         };
     }
 
-    pub fn unwrap_fat(self) -> FatZapHeader {
+    pub fn unwrap_fat(&self) -> &FatZapHeader {
         match self {
             Self::FatZap(header) => header,
             _ => panic!("Expected to get a fat zap, got a micro zap!")
         }
+    }
+
+    pub fn dump_contents(&self, parent_dnode: &mut Dnode, vdevs: &mut Vdevs) -> HashMap<String, Value> {
+        let mut result = HashMap::<String, Value>::new();
+        let header = self.unwrap_fat();
+        let mut leafs_read = HashSet::<u64>::new();
+        for i in 0..header.get_hash_table_size() {
+            let block_id = header.read_hash_table_at(i);
+            if !leafs_read.insert(block_id) { continue; }
+            let leaf = ZapLeaf::from_bytes_le(&mut parent_dnode.read_block(block_id as usize, vdevs).unwrap().iter().copied(), parent_dnode.parse_data_block_size()).unwrap();
+            leaf.dump_contents_into(&mut result);
+        }
+
+        result
     }
 }
