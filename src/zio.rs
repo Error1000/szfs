@@ -242,7 +242,7 @@ impl BlockPointer {
             };
 
             if &computed_checksum != self.get_checksum() {
-                println!("Invalid checksum for dva: {:?}, the checksum should be: {:#x?}, ignoring.", dva, self.checksum);
+                println!("Invalid checksum for dva: {:?}, ignoring.", dva);
                 continue;
             }
 

@@ -89,7 +89,8 @@ pub enum Value {
     I64(i64),
     U64(u64),
     String(String),
-    NVList(NVList)
+    NVList(NVList),
+    NVListArray(Vec<NVList>)
 }
 
 impl TryInto<NVList> for Value {
@@ -117,6 +118,7 @@ impl Debug for Value {
             Self::U64(arg0) => write!(f, "{:?}", arg0),
             Self::String(arg0) => write!(f, "{:?}", arg0),
             Self::NVList(arg0) => write!(f, "{:?}", arg0),
+            Self::NVListArray(arg0) => write!(f, "{:?}", arg0)
         }
     }
 }
@@ -229,7 +231,15 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
             ValueType::StringArray => todo!(),
             ValueType::HRTime => todo!(),
             ValueType::NVList => { if nv_list.insert(name, Value::NVList(from_bytes(data, recursion_depth+1)?)).is_some() {nvpair_name_repeated()} },
-            ValueType::NVListArray => todo!(),
+            ValueType::NVListArray => {
+                let mut values = Vec::<NVList>::new();
+                
+                for _ in 0..nvalues {
+                    values.push(from_bytes(data, recursion_depth+1)?);
+                }
+
+                if nv_list.insert(name, Value::NVListArray(values)).is_some() {nvpair_name_repeated()}
+            },
             ValueType::BooleanValue => todo!(),
             ValueType::I8 => todo!(),
             ValueType::U8 => todo!(),
