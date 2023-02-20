@@ -3,7 +3,7 @@ use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer, Vdevs},
 #[derive(Debug, PartialEq, Eq)]
 pub enum ObjType {
     None = 0,
-    Directory = 1,
+    ObjectDirectory = 1,
     ObjectArray = 2,
     PackedNVList = 3,
     PackedNVListSize = 4,
@@ -33,7 +33,7 @@ impl ObjType {
     pub fn from_value(value: usize) -> Option<Self> {
         Some(match value {
             0  => Self::None,
-            1  => Self::Directory, 
+            1  => Self::ObjectDirectory, 
             2  => Self::ObjectArray,
             3  => Self::PackedNVList,
             4  => Self::PackedNVListSize,
@@ -67,8 +67,8 @@ pub enum BonusType {
     None = 0,
     PackedNVListSize = 4,
     SpaceMapHeader = 7,
-    DSLDataset = 12,
-    DSLObjSet = 16,
+    DSLDirectory = 12,
+    DSLDataset = 16,
     ZNode = 17
 }
 
@@ -78,8 +78,8 @@ impl BonusType {
             0  => Self::None,
             4  => Self::PackedNVListSize,
             7  => Self::SpaceMapHeader,
-            12 => Self::DSLDataset,
-            16 => Self::DSLObjSet,
+            12 => Self::DSLDirectory,
+            16 => Self::DSLDataset,
             17 => Self::ZNode,
             _ => return None
         })
@@ -110,7 +110,7 @@ pub struct Dnode {
 
 #[derive(Debug)]
 struct IndirectBlockTag {
-    id: usize, // With number is the block if you were to sequentially lay out all the blocks at this level
+    id: usize, // Which number is the block if you were to sequentially lay out all the blocks at this level
     offset: usize // At what index in the block can you find the pointer to the next level 
 }
 
