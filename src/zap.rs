@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::fmt::Debug;
+
 use crate::byte_iter::ByteIter;
 
 #[derive(Debug, PartialEq)]
@@ -41,6 +44,24 @@ impl ZapLeafChunkType {
     }
 }
 
+pub enum Value {
+    U64(u64),
+    Byte(u8),
+    ByteArray(Vec<u8>),
+    U64Array(Vec<u64>)
+}
+
+impl Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::U64(arg0) => write!(f, "{:?}", arg0),
+            Self::Byte(arg0) => write!(f, "{:?}", arg0),
+            Self::ByteArray(arg0) => write!(f, "{:?}", arg0),
+            Self::U64Array(arg0) => write!(f, "{:?}", arg0),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ZapLeaf {
     header: ZapLeafHeader,
@@ -71,6 +92,82 @@ impl ZapLeaf {
         }
         
         Some(ZapLeaf { header, hash_table, chunks })
+    }
+
+    pub fn get_chunks(&self) -> &Vec<ZapLeafChunk> {
+        &self.chunks
+    }
+
+    pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) {
+        for chunk in self.get_chunks() {
+            match chunk {
+                ZapLeafChunk::Entry { int_size, next_chunk_id, name_chunk_id, name_length, value_chunk_id, nvalues, collision_differentiator, hash } => {
+                    let int_size = usize::from(*int_size);
+                    let name_length = usize::from(*name_length);
+                    let nvalues = usize::from(*nvalues);
+
+                    let name_chunk = self.read_data_starting_at_chunk(usize::from(*name_chunk_id), name_length-1).unwrap();
+                    let value_chunk = self.read_data_starting_at_chunk(usize::from(*value_chunk_id), nvalues * int_size).unwrap();
+                    let name = std::str::from_utf8(&name_chunk).unwrap();
+                    let fat_zap_name_repeated = || {
+                        panic!("Fat zap name repeated, this is not supported!");
+                    };
+
+                    match int_size {
+                        8 if nvalues == 1 => {
+                            let value = value_chunk.iter().copied().read_u64_be().unwrap();
+                            if hashmap.insert(name.to_owned(), Value::U64(value)).is_some() {fat_zap_name_repeated()}
+                        }
+
+                        8 if nvalues > 1 => {
+                            let mut values = Vec::<u64>::new();
+                            let mut iter = value_chunk.iter().copied();
+                            for _ in 0..nvalues {
+                                values.push(iter.read_u64_be().unwrap());
+                            }
+                            if hashmap.insert(name.to_owned(), Value::U64Array(values)).is_some() {fat_zap_name_repeated()}
+                        }
+
+                        1 if nvalues == 1 => {
+                            let value = value_chunk.iter().copied().read_u8().unwrap();
+                            if hashmap.insert(name.to_owned(), Value::Byte(value)).is_some() {fat_zap_name_repeated()}
+                        }
+
+                        1 if nvalues > 1 => {
+                            let mut values = Vec::<u8>::new();
+                            let mut iter = value_chunk.iter().copied();
+                            for _ in 0..nvalues {
+                                values.push(iter.read_u8().unwrap());
+                            }
+                            if hashmap.insert(name.to_owned(), Value::ByteArray(values)).is_some() {fat_zap_name_repeated()}
+                        }
+
+                        _ => todo!("Implement reading: {} values of size: {}", nvalues, int_size)
+                    }
+                },
+                ZapLeafChunk::Array { array, next_chunk_id } => (),
+                ZapLeafChunk::Free { next_chunk_id } => (),
+            }
+        }
+    }
+
+    pub fn read_data_starting_at_chunk(&self, chunk_id: usize, size: usize) -> Option<Vec<u8>> {
+        let mut data = Vec::<u8>::new();
+        let mut chunk_to_read = &self.chunks[chunk_id];
+        while data.len() < size {
+            match chunk_to_read {
+                ZapLeafChunk::Entry { int_size, next_chunk_id, name_chunk_id, name_length, value_chunk_id, nvalues, collision_differentiator, hash }  => return None,
+                ZapLeafChunk::Array { array, next_chunk_id } => {
+                    data.extend(array);
+                    if *next_chunk_id == u16::MAX { break; }
+                    chunk_to_read = &self.chunks[usize::from(*next_chunk_id)];
+                },
+                ZapLeafChunk::Free { next_chunk_id } => return None,
+            }
+        }
+        if data.len() < size { return None; }
+        data.resize(size, 0);
+        Some(data)
     }
 }
 
@@ -116,20 +213,20 @@ impl ZapLeafHeader {
 pub enum ZapLeafChunk {
     Entry {
         int_size: u8,
-        next_chunk: u16,
-        name_chunk: u16,
+        next_chunk_id: u16,
+        name_chunk_id: u16,
         name_length: u16,
-        value_chunk: u16,
-        value_length: u16,
+        value_chunk_id: u16,
+        nvalues: u16,
         collision_differentiator: u16,
         hash: u64
     },
     Array{
         array: Vec<u8>,
-        next_chunk: u16,
+        next_chunk_id: u16,
     },
     Free{
-        next_chunk: u16
+        next_chunk_id: u16
     }
 }
 
@@ -149,21 +246,21 @@ impl ZapLeafChunk {
         match chunk_type {
             ZapLeafChunkType::Entry => {
                 let int_size = data.read_u8()?;
-                let next_chunk = data.read_u16_le()?;
-                let name_chunk = data.read_u16_le()?;
+                let next_chunk_id = data.read_u16_le()?;
+                let name_chunk_id = data.read_u16_le()?;
                 let name_length = data.read_u16_le()?;
-                let value_chunk = data.read_u16_le()?;
-                let value_length = data.read_u16_le()?;
+                let value_chunk_id = data.read_u16_le()?;
+                let nvalues = data.read_u16_le()?;
                 let collision_differentiator = data.read_u16_le()?;
                 data.skip_n_bytes(2)?; // padding
                 let hash = data.read_u64_le()?;
                 Some(ZapLeafChunk::Entry { 
                     int_size, 
-                    next_chunk, 
-                    name_chunk, 
+                    next_chunk_id, 
+                    name_chunk_id, 
                     name_length, 
-                    value_chunk, 
-                    value_length, 
+                    value_chunk_id, 
+                    nvalues, 
                     collision_differentiator, 
                     hash 
                 })
@@ -173,13 +270,13 @@ impl ZapLeafChunk {
                 for byte in array.iter_mut() {
                     *byte = data.read_u8()?;
                 }
-                let next_chunk = data.read_u16_le()?;
-                Some(ZapLeafChunk::Array { array, next_chunk })
+                let next_chunk_id = data.read_u16_le()?;
+                Some(ZapLeafChunk::Array { array, next_chunk_id })
             },
             ZapLeafChunkType::Free => {
                 data.skip_n_bytes(Self::get_byte_array_size())?;
-                let next_chunk = data.read_u16_le()?;
-                Some(ZapLeafChunk::Free { next_chunk })
+                let next_chunk_id = data.read_u16_le()?;
+                Some(ZapLeafChunk::Free { next_chunk_id })
             },
         }
     }

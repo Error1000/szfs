@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::{fs::{File, OpenOptions}, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap};
+use std::{fs::{File, OpenOptions}, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap, hash::Hash};
 
 use byte_iter::ByteIter;
 
@@ -223,6 +223,7 @@ fn main() {
     let object_directory_data2 = object_directory.read_block(some_leaf_blkid.try_into().unwrap(), &mut vdevs).unwrap();
     let some_leaf = zap::ZapLeaf::from_bytes_le(&mut object_directory_data2.iter().copied(), object_directory.parse_data_block_size()).unwrap();
     println!("{:?}", active_uberblock);
-    println!("{:?}", zap_header);
-    println!("{:?}", some_leaf);
+    let mut extracted_data = HashMap::<String, zap::Value>::new();
+    some_leaf.dump_contents_into(&mut extracted_data);
+    println!("{:?}", extracted_data);
 }
