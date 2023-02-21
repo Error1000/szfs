@@ -191,7 +191,7 @@ impl ZapLeafHeader {
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<ZapLeafHeader> {
         let zap_type = ZapType::from_value(data.read_u64_le()?)?;
         use crate::ansi_color::*;
-        if zap_type != ZapType::FatZapLeaf { println!("{YELLOW}Warning{WHITE}: Attempted to parse a zap structure as a leaf, it was not a leaf!"); return None; };
+        if zap_type != ZapType::FatZapLeaf { println!("{YELLOW}Warning{WHITE}: Attempted to parse a {:?} as a leaf, sanity check failed!", zap_type); return None; };
         let next_leaf = data.read_u64_le()?;
         let prefix = data.read_u64_le()?;
         let magic = data.read_u32_le()?;

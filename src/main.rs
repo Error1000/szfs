@@ -13,6 +13,7 @@ mod dmu;
 mod fletcher;
 mod lz4;
 mod zap;
+mod dsl;
 
 mod ansi_color {
     pub const RED: &str = "\u{001b}[31m";
@@ -167,6 +168,7 @@ impl Uberblock {
 }
 
 fn main() {
+    use crate::ansi_color::*;
     // let args: Vec<String> = std::env::args().collect();
     // if args.len() < 2 {
     //     println!("Usage: {} (device)", args[0]);
@@ -175,8 +177,7 @@ fn main() {
 
     let Ok(vdev) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/disk1.raw") 
     else {
-        use crate::ansi_color::*;
-        println!("{RED}Error{WHITE}: Failed to open vdev!");
+        println!("{RED}Fatal{WHITE}: Failed to open vdev!");
         return;
     };
 
@@ -208,7 +209,7 @@ fn main() {
     }
     
     // println!("Parsed nv_list: {:?}!", name_value_pairs);
-    // println!("Found {} uberblocks!", uberblocks.len());
+    println!("{CYAN}Info{WHITE}: Found {} uberblocks!", uberblocks.len());
     uberblocks.sort_unstable_by(|a, b| a.ub_txg.cmp(&b.ub_txg));
 
         
@@ -225,21 +226,23 @@ fn main() {
     };
 
     let (active_uberblock, mos_data) = uberblock_search_info.unwrap();
+    println!("{CYAN}Info{WHITE}: Using {:?}", active_uberblock);
+
     let mut mos = dmu::ObjSet::from_bytes_le(&mut mos_data.iter().copied()).expect("Mos should be valid!");
     
     let DNode::ObjectDirectory(mut object_directory) = mos.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!")
     else {panic!("DNode 1 is not an object directory!"); };
-
     let zap_header = object_directory.get_zap_header(&mut vdevs).unwrap();
     let zap_data = zap_header.dump_contents(&mut object_directory, &mut vdevs);
-    println!("{:?}", active_uberblock);
-    let zap::Value::U64(root_dataset_id) = zap_data["root_dataset"] else {
+    let zap::Value::U64(root_dataset_number) = zap_data["root_dataset"] else {
         panic!("Couldn't read root_dataset id!");
     };
     
-    let DNode::DSLDirectory(root_dataset) = mos.get_dnode_at(root_dataset_id as usize, &mut vdevs).unwrap() else {
-        panic!("DNode {} which is the root_dataset is not a dsl directory!", root_dataset_id);
+    let DNode::DSLDirectory(root_dataset) = mos.get_dnode_at(root_dataset_number as usize, &mut vdevs).unwrap() else {
+        panic!("DNode {} which is the root_dataset is not a dsl directory!", root_dataset_number);
     };
 
-    println!("{:?}", root_dataset);
+    let head_dataset_number = root_dataset.parse_bonus_data().unwrap().get_head_dataset_object_number();
+    let head_dataset = mos.get_dnode_at(head_dataset_number as usize, &mut vdevs);
+    println!("{:?}", head_dataset);
 }

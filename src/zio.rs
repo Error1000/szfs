@@ -243,7 +243,7 @@ impl BlockPointer {
 
             if &computed_checksum != self.get_checksum() {
                 use crate::ansi_color::*;
-                println!("{YELLOW}Warning{WHITE}: Invalid checksum for dva: {:?}, ignoring.", dva);
+                println!("{YELLOW}Warning{WHITE}: Invalid checksum for dva: {:?}, ignoring this dva.", dva);
                 continue;
             }
 

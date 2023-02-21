@@ -1,4 +1,5 @@
-use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer, Vdevs}, byte_iter::ByteIter, zil::ZilHeader, zap};
+use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer, Vdevs}, byte_iter::ByteIter, zil::ZilHeader, zap, dsl};
+use std::fmt::Debug;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ObjType {
@@ -93,7 +94,6 @@ mod dnode_flag {
 
 
 // General dnode data, not specific to any type of dnode
-#[derive(Debug)]
 pub struct DNodeBase {
     indirect_blocksize_log2: u8,
     n_indirect_levels: u8,
@@ -108,19 +108,24 @@ pub struct DNodeBase {
     bonus_data: Vec<u8>
 }
 
-
-#[derive(Debug)]
-pub struct DNodeObjectDirectory (pub DNodeBase);
-
-impl DNodeObjectDirectory {
-    pub fn get_zap_header(&mut self, vdevs: &mut Vdevs) -> Option<zap::ZapHeader> {
-        zap::ZapHeader::from_bytes_le(&mut self.0.read_block(0, vdevs).ok()?.iter().copied(), self.0.parse_data_block_size())
+impl Debug for DNodeBase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f
+        .debug_struct("DNodeBase")
+        .field("indirect_blocksize", &self.parse_indirect_block_size())
+        .field("n_indirect_levels", &self.n_indirect_levels)
+        .field("checksum_method", &self.checksum_method)
+        .field("compression_method", &self.compression_method)
+        .field("data_blocksize", &self.parse_data_block_size())
+        .field("num_slots", &self.num_slots)
+        .field("max_indirect_block_id", &self.max_indirect_block_id)
+        .field("total_allocated", &self.total_allocated)
+        .field("total_allocated_is_in_bytes", &self.total_allocated_is_in_bytes)
+        .field("block_pointers", &self.block_pointers)
+        .field("bonus_data", &self.bonus_data)
+        .finish()
     }
 }
-
-
-#[derive(Debug)]
-pub struct DNodeDSLDirectory (pub DNodeBase);
 
 #[derive(Debug)]
 struct IndirectBlockTag {
@@ -167,7 +172,11 @@ impl DNodeBase {
         }
 
         // Currently there must be at least one block pointer and at most 3
-        assert!(n_block_pointers >= 1 && n_block_pointers <= 3);
+        if !(n_block_pointers >= 1 && n_block_pointers <= 3) {
+            use crate::ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Tried to parse a dnode with {} block pointers, sanity check failed!", n_block_pointers);
+            return None;
+        }
 
         // So far we have read 64 bytes, this is where the tail starts
         // The tail contains the variably sized data like the blkptrs, the bonus_data
@@ -305,10 +314,47 @@ impl DNodeBase {
 }
 
 
+
+#[derive(Debug)]
+pub struct DNodeObjectDirectory (pub DNodeBase);
+
+impl DNodeObjectDirectory {
+    pub fn get_zap_header(&mut self, vdevs: &mut Vdevs) -> Option<zap::ZapHeader> {
+        zap::ZapHeader::from_bytes_le(&mut self.0.read_block(0, vdevs).ok()?.iter().copied(), self.0.parse_data_block_size())
+    }
+}
+
+
+pub struct DNodeDSLDirectory (pub DNodeBase);
+
+impl Debug for DNodeDSLDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // NOTE: Since this type of dnode does not contain data show info about the block pointers, data block size, and the allocated size, is useless, so we don't do it
+        f
+        .debug_struct("DNodeDSLDirectory")
+        .field("checksum_method", &self.0.checksum_method)
+        .field("compression_method", &self.0.compression_method)
+        .field("num_slots", &self.0.num_slots)
+        .field("bonus", &self.parse_bonus_data())
+        .finish()
+    }
+}
+
+impl DNodeDSLDirectory {
+    pub fn parse_bonus_data(&self) -> Option<dsl::DSLDirectoryData> {
+        dsl::DSLDirectoryData::from_bytes_le(&mut self.0.bonus_data.iter().copied())
+    }
+}
+
+#[derive(Debug)]
+pub struct DNodeDSLDataset (pub DNodeBase);
+
+
 #[derive(Debug)]
 pub enum DNode {
     ObjectDirectory(DNodeObjectDirectory),
-    DSLDirectory(DNodeDSLDirectory)
+    DSLDirectory(DNodeDSLDirectory),
+    DSLDataset(DNodeDSLDataset),
 }
 
 impl DNode {
@@ -341,7 +387,16 @@ impl DNode {
             ObjType::DSLDatasetChildMap => todo!(),
             ObjType::ObjSetSnapshotMap => todo!(),
             ObjType::DSLProperties => todo!(),
-            ObjType::DSLObjSet => todo!(),
+            ObjType::DSLObjSet => {
+                match bonus_data_type {
+                    BonusType::None => todo!(),
+                    BonusType::PackedNVListSize => todo!(),
+                    BonusType::SpaceMapHeader => todo!(),
+                    BonusType::DSLDirectory => todo!(),
+                    BonusType::DSLDataset => DNode::DSLDataset(DNodeDSLDataset(dnode_base)),
+                    BonusType::ZNode => todo!(),
+                }
+            },
             ObjType::ZNode => todo!(),
             ObjType::AcessControlList => todo!(),
             ObjType::PlainFileContents => todo!(),
@@ -387,7 +442,7 @@ impl ObjSet {
         let (metadnode, metadnode_type, _) = DNodeBase::from_bytes_le(data)?;
         if metadnode_type != ObjType::DNode { 
             use crate::ansi_color::*;
-            println!("{YELLOW}Warning{WHITE}: Tried to open objset with metadnode of type: {:?}!", metadnode_type);
+            println!("{YELLOW}Warning{WHITE}: Tried to open objset with metadnode of type: {:?}, sanity check failed!", metadnode_type);
             return None; 
         }
 
