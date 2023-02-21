@@ -103,7 +103,7 @@ impl ZapLeaf {
     pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) {
         for chunk in self.get_chunks() {
             match chunk {
-                ZapLeafChunk::Entry { int_size, next_chunk_id, name_chunk_id, name_length, value_chunk_id, nvalues, collision_differentiator, hash } => {
+                ZapLeafChunk::Entry { int_size, next_chunk_id: _, name_chunk_id, name_length, value_chunk_id, nvalues, collision_differentiator: _, hash: _ } => {
                     let int_size = usize::from(*int_size);
                     let name_length = usize::from(*name_length);
                     let nvalues = usize::from(*nvalues);
@@ -147,8 +147,8 @@ impl ZapLeaf {
                         _ => todo!("Implement reading: {} values of size: {}", nvalues, int_size)
                     }
                 },
-                ZapLeafChunk::Array { array, next_chunk_id } => (),
-                ZapLeafChunk::Free { next_chunk_id } => (),
+                ZapLeafChunk::Array { array: _, next_chunk_id: _ } => (),
+                ZapLeafChunk::Free { next_chunk_id: _ } => (),
             }
         }
     }
@@ -158,13 +158,13 @@ impl ZapLeaf {
         let mut chunk_to_read = &self.chunks[chunk_id];
         while data.len() < size {
             match chunk_to_read {
-                ZapLeafChunk::Entry { int_size, next_chunk_id, name_chunk_id, name_length, value_chunk_id, nvalues, collision_differentiator, hash }  => return None,
+                ZapLeafChunk::Entry { int_size: _, next_chunk_id: _, name_chunk_id: _, name_length: _, value_chunk_id: _, nvalues: _, collision_differentiator: _, hash: _ }  => return None,
                 ZapLeafChunk::Array { array, next_chunk_id } => {
                     data.extend(array);
                     if *next_chunk_id == u16::MAX { break; }
                     chunk_to_read = &self.chunks[usize::from(*next_chunk_id)];
                 },
-                ZapLeafChunk::Free { next_chunk_id } => return None,
+                ZapLeafChunk::Free { next_chunk_id: _ } => return None,
             }
         }
         if data.len() < size { return None; }
@@ -190,7 +190,8 @@ impl ZapLeafHeader {
 
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<ZapLeafHeader> {
         let zap_type = ZapType::from_value(data.read_u64_le()?)?;
-        if zap_type != ZapType::FatZapLeaf { println!("Attempted to parse a zap structure as a leaf, it was not a leaf!"); return None; };
+        use crate::ansi_color::*;
+        if zap_type != ZapType::FatZapLeaf { println!("{YELLOW}Warning{WHITE}: Attempted to parse a zap structure as a leaf, it was not a leaf!"); return None; };
         let next_leaf = data.read_u64_le()?;
         let prefix = data.read_u64_le()?;
         let magic = data.read_u32_le()?;

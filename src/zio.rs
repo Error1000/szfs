@@ -242,7 +242,8 @@ impl BlockPointer {
             };
 
             if &computed_checksum != self.get_checksum() {
-                println!("Invalid checksum for dva: {:?}, ignoring.", dva);
+                use crate::ansi_color::*;
+                println!("{YELLOW}Warning{WHITE}: Invalid checksum for dva: {:?}, ignoring.", dva);
                 continue;
             }
 
@@ -256,7 +257,8 @@ impl BlockPointer {
                 _ => todo!("Implement {:?} compression!", self.compression_method),
             };
             assert!(data.len() == self.parse_logical_size() as usize);
-            println!("Using dva: {:?}", dva);
+            use crate::ansi_color::*;
+            println!("{CYAN}Info{WHITE}: Using dva: {:?}", dva);
             return Ok(data);
         }
 

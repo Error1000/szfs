@@ -1,4 +1,4 @@
-use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer, Vdevs}, byte_iter::ByteIter, zil::ZilHeader};
+use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer, Vdevs}, byte_iter::ByteIter, zil::ZilHeader, zap};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ObjType {
@@ -87,8 +87,8 @@ impl BonusType {
 }
 
 mod dnode_flag {
-    pub const UsedAmountIsInBytes: u8 = 1 << 0;
-    pub const HasSpillBlkptr: u8 = 1 << 2;
+    pub const USED_AMOUNT_IS_IN_BYTES: u8 = 1 << 0;
+    pub const HAS_SPILL_BLKPTR: u8 = 1 << 2;
 }
 
 
@@ -111,6 +111,12 @@ pub struct DNodeBase {
 
 #[derive(Debug)]
 pub struct DNodeObjectDirectory (pub DNodeBase);
+
+impl DNodeObjectDirectory {
+    pub fn get_zap_header(&mut self, vdevs: &mut Vdevs) -> Option<zap::ZapHeader> {
+        zap::ZapHeader::from_bytes_le(&mut self.0.read_block(0, vdevs).ok()?.iter().copied(), self.0.parse_data_block_size())
+    }
+}
 
 
 #[derive(Debug)]
@@ -156,7 +162,7 @@ impl DNodeBase {
         let total_allocated = data.read_u64_le()?; /* bytes (or sectors, depending on a flag) of disk space */
         data.skip_n_bytes(4*core::mem::size_of::<u64>())?; // Ignore 4 u64 paddings
 
-        if flags & dnode_flag::HasSpillBlkptr != 0 {
+        if flags & dnode_flag::HAS_SPILL_BLKPTR != 0 {
             todo!("Implement spill blocks for dnodes!");
         }
 
@@ -206,7 +212,7 @@ impl DNodeBase {
             num_slots: extra_slots+1, 
             max_indirect_block_id, 
             total_allocated, 
-            total_allocated_is_in_bytes: (flags & dnode_flag::UsedAmountIsInBytes) != 0,
+            total_allocated_is_in_bytes: (flags & dnode_flag::USED_AMOUNT_IS_IN_BYTES) != 0,
             block_pointers, 
             bonus_data 
         }, dnode_type, bonus_data_type))
@@ -379,6 +385,12 @@ impl ObjSet {
     pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<ObjSet>
     where Iter: Iterator<Item = u8> + Clone {
         let (metadnode, metadnode_type, _) = DNodeBase::from_bytes_le(data)?;
+        if metadnode_type != ObjType::DNode { 
+            use crate::ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Tried to open objset with metadnode of type: {:?}!", metadnode_type);
+            return None; 
+        }
+
         let zil = ZilHeader::from_bytes_le(&mut data.clone());
         data.skip_n_bytes(ZilHeader::get_ondisk_size());
 

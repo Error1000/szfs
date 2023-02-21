@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::{fs::{File, OpenOptions}, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap, hash::Hash};
+use std::{fs::File, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap};
 
 use byte_iter::ByteIter;
 
@@ -13,6 +13,13 @@ mod dmu;
 mod fletcher;
 mod lz4;
 mod zap;
+
+mod ansi_color {
+    pub const RED: &str = "\u{001b}[31m";
+    pub const YELLOW: &str = "\u{001b}[33m";
+    pub const CYAN: &str = "\u{001b}[36m";
+    pub const WHITE: &str = "\u{001b}[0m";
+}
 
 pub trait Vdev {
     fn get_size(&self) -> u64;
@@ -152,7 +159,7 @@ impl Uberblock {
         if ub_magic_le == UBERBLOCK_MAGIC { // Little-endian
             Self::from_bytes_le(data)
         } else if ub_magic_be == UBERBLOCK_MAGIC { // Big-endian
-            todo!("Implement big endian uberblock support!");
+            todo!("Implement big endian support!");
         } else { // Invalid magic
             return None;
         }
@@ -168,13 +175,14 @@ fn main() {
 
     let Ok(vdev) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/disk1.raw") 
     else {
-        println!("Failed to open vdev!");
+        use crate::ansi_color::*;
+        println!("{RED}Error{WHITE}: Failed to open vdev!");
         return;
     };
 
     let mut vdev: VdevFile = vdev.into();
     // For now just use the first label
-    let mut label0 = VdevLabel::from_bytes(&vdev.read_raw_label0().expect("Vdev label 0 must exist!"));
+    let mut label0 = VdevLabel::from_bytes(&vdev.read_raw_label0().expect("Vdev label 0 must be parsable!"));
 
     let name_value_pairs = nvlist::from_bytes_xdr(&mut label0.name_value_pairs_raw.iter().copied()).expect("Name value pairs in the vdev label must be valid!");
     let nvlist::Value::NVList(vdev_tree) = &name_value_pairs["vdev_tree"] else {
@@ -185,7 +193,7 @@ fn main() {
         panic!("no ashift found for top level vdev!");
     };
 
-    let nvlist::Value::U64(label_txg) = name_value_pairs["txg"] else {
+    let nvlist::Value::U64(_label_txg) = name_value_pairs["txg"] else {
         panic!("no txg found in label!");
     };
 
@@ -220,15 +228,18 @@ fn main() {
     let mut mos = dmu::ObjSet::from_bytes_le(&mut mos_data.iter().copied()).expect("Mos should be valid!");
     
     let DNode::ObjectDirectory(mut object_directory) = mos.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!")
-    else {panic!("Dnode 1 is not an object directory!"); };
-    let zap_header_data = object_directory.0.read_block(0, &mut vdevs).unwrap();
-    let zap_header = zap::ZapHeader::from_bytes_le(&mut zap_header_data.iter().copied(), object_directory.0.parse_data_block_size()).unwrap();
+    else {panic!("DNode 1 is not an object directory!"); };
+
+    let zap_header = object_directory.get_zap_header(&mut vdevs).unwrap();
     let zap_data = zap_header.dump_contents(&mut object_directory, &mut vdevs);
     println!("{:?}", active_uberblock);
     let zap::Value::U64(root_dataset_id) = zap_data["root_dataset"] else {
         panic!("Couldn't read root_dataset id!");
     };
     
-    let root_dataset = mos.get_dnode_at(root_dataset_id as usize, &mut vdevs).unwrap();
+    let DNode::DSLDirectory(root_dataset) = mos.get_dnode_at(root_dataset_id as usize, &mut vdevs).unwrap() else {
+        panic!("DNode {} which is the root_dataset is not a dsl directory!", root_dataset_id);
+    };
+
     println!("{:?}", root_dataset);
 }
