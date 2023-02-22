@@ -346,8 +346,26 @@ impl DNodeDSLDirectory {
     }
 }
 
-#[derive(Debug)]
 pub struct DNodeDSLDataset (pub DNodeBase);
+
+impl Debug for DNodeDSLDataset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // NOTE: Since this type of dnode does not contain data show info about the block pointers, data block size, and the allocated size, is useless, so we don't do it
+        f
+        .debug_struct("DNodeDSLDataset")
+        .field("checksum_method", &self.0.checksum_method)
+        .field("compression_method", &self.0.compression_method)
+        .field("num_slots", &self.0.num_slots)
+        .field("bonus", &self.parse_bonus_data())
+        .finish()
+    }
+}
+
+impl DNodeDSLDataset {
+    pub fn parse_bonus_data(&self) -> Option<dsl::DSLDatasetData> {
+        dsl::DSLDatasetData::from_bytes_le(&mut self.0.bonus_data.iter().copied())
+    }
+}
 
 
 #[derive(Debug)]

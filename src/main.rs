@@ -228,9 +228,9 @@ fn main() {
     let (active_uberblock, mos_data) = uberblock_search_info.unwrap();
     println!("{CYAN}Info{WHITE}: Using {:?}", active_uberblock);
 
-    let mut mos = dmu::ObjSet::from_bytes_le(&mut mos_data.iter().copied()).expect("Mos should be valid!");
+    let mut meta_object_set = dmu::ObjSet::from_bytes_le(&mut mos_data.iter().copied()).expect("Mos should be valid!");
     
-    let DNode::ObjectDirectory(mut object_directory) = mos.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!")
+    let DNode::ObjectDirectory(mut object_directory) = meta_object_set.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!")
     else {panic!("DNode 1 is not an object directory!"); };
     let zap_header = object_directory.get_zap_header(&mut vdevs).unwrap();
     let zap_data = zap_header.dump_contents(&mut object_directory, &mut vdevs);
@@ -238,11 +238,18 @@ fn main() {
         panic!("Couldn't read root_dataset id!");
     };
     
-    let DNode::DSLDirectory(root_dataset) = mos.get_dnode_at(root_dataset_number as usize, &mut vdevs).unwrap() else {
+    let DNode::DSLDirectory(root_dataset) = meta_object_set.get_dnode_at(root_dataset_number as usize, &mut vdevs).unwrap() else {
         panic!("DNode {} which is the root_dataset is not a dsl directory!", root_dataset_number);
     };
 
     let head_dataset_number = root_dataset.parse_bonus_data().unwrap().get_head_dataset_object_number();
-    let head_dataset = mos.get_dnode_at(head_dataset_number as usize, &mut vdevs);
-    println!("{:?}", head_dataset);
+    let DNode::DSLDataset(head_dataset) = meta_object_set.get_dnode_at(head_dataset_number as usize, &mut vdevs).unwrap() else {
+        panic!("DNode {} whichs is the head_dataset is not a dsl dataset!", head_dataset_number);
+    };
+    let mut head_dataset_bonus = head_dataset.parse_bonus_data().unwrap();
+    let head_dataset_blockpointer = head_dataset_bonus.get_block_pointer();
+
+    let head_dataset_object_set = dmu::ObjSet::from_bytes_le(&mut head_dataset_blockpointer.dereference(&mut vdevs).unwrap().iter().copied()).unwrap();
+
+    println!("{:?}", head_dataset_object_set);
 }

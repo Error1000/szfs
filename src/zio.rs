@@ -177,6 +177,7 @@ impl Debug for BlockPointer {
 
 impl BlockPointer {
     pub fn get_ondisk_size() -> usize { 128 }
+    
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<BlockPointer> {
         let dva1 = DataVirtualAddress::from_bytes_le(data)?;
         let dva2 = DataVirtualAddress::from_bytes_le(data)?;
