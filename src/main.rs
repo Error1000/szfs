@@ -232,9 +232,9 @@ fn main() {
     
     let DNode::ObjectDirectory(mut object_directory) = meta_object_set.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!")
     else {panic!("DNode 1 is not an object directory!"); };
-    let zap_header = object_directory.get_zap_header(&mut vdevs).unwrap();
-    let zap_data = zap_header.dump_contents(&mut object_directory, &mut vdevs);
-    let zap::Value::U64(root_dataset_number) = zap_data["root_dataset"] else {
+    let objdir_zap_header = object_directory.get_zap_header(&mut vdevs).unwrap();
+    let objdir_zap_data = objdir_zap_header.dump_contents(&mut object_directory.0, &mut vdevs).unwrap();
+    let zap::Value::U64(root_dataset_number) = objdir_zap_data["root_dataset"] else {
         panic!("Couldn't read root_dataset id!");
     };
     
@@ -249,7 +249,14 @@ fn main() {
     let mut head_dataset_bonus = head_dataset.parse_bonus_data().unwrap();
     let head_dataset_blockpointer = head_dataset_bonus.get_block_pointer();
 
-    let head_dataset_object_set = dmu::ObjSet::from_bytes_le(&mut head_dataset_blockpointer.dereference(&mut vdevs).unwrap().iter().copied()).unwrap();
+    let mut head_dataset_object_set = dmu::ObjSet::from_bytes_le(&mut head_dataset_blockpointer.dereference(&mut vdevs).unwrap().iter().copied()).unwrap();
 
-    println!("{:?}", head_dataset_object_set);
+    let DNode::MasterNode(mut head_dataset_master_node) = head_dataset_object_set.get_dnode_at(1, &mut vdevs).unwrap() else {
+        panic!("DNode 1 which is the master_node is not a master node!");
+    };
+    
+    let master_node_zap_header = head_dataset_master_node.get_zap_header(&mut vdevs).unwrap();
+    let master_node_zap_data = master_node_zap_header.dump_contents(&mut head_dataset_master_node.0, &mut vdevs).unwrap();
+
+    println!("{:?}", master_node_zap_data);
 }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
 use crate::byte_iter::ByteIter;
-use crate::dmu::DNodeObjectDirectory;
+use crate::dmu::DNodeBase;
 use crate::zio::Vdevs;
 
 #[derive(Debug, PartialEq)]
@@ -64,6 +64,52 @@ impl Debug for Value {
     }
 }
 
+
+fn zap_name_repeated() {
+    panic!("Fat zap name repeated, this is not supported!");
+}
+
+pub struct MicroZapEntry {
+    value: u64,
+    collision_differentiator: u32,
+    name: Vec<u8>
+}
+
+impl MicroZapEntry {
+    pub fn get_ondisk_size() -> usize {
+        64
+    }
+
+    pub fn get_name_length() -> usize {
+        Self::get_ondisk_size()
+        - core::mem::size_of::<u64>()
+        - core::mem::size_of::<u32>()
+        - core::mem::size_of::<u16>() /* padding */
+    }
+
+    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<MicroZapEntry> {
+        let value = data.read_u64_le()?;
+        let collision_differentiator = data.read_u32_le()?;
+        data.skip_n_bytes(core::mem::size_of::<u16>())?;
+        let name = Vec::from_iter(data.take(Self::get_name_length()));
+        assert!(name.len() == Self::get_name_length());
+        Some(MicroZapEntry {
+            value, 
+            collision_differentiator, 
+            name
+        })
+    }
+
+    #[must_use]
+    pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) -> Option<()>{
+        let nul_index = self.name.iter().position(|byte| *byte == 0)?;
+        let name = std::str::from_utf8(&self.name[0..nul_index]).ok()?;
+        if hashmap.insert(name.to_string(), Value::U64(self.value)).is_some() { zap_name_repeated() }
+        Some(())
+    }
+}
+
+
 #[derive(Debug)]
 pub struct ZapLeaf {
     header: ZapLeafHeader,
@@ -100,7 +146,8 @@ impl ZapLeaf {
         &self.chunks
     }
 
-    pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) {
+    #[must_use]
+    pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) -> Option<()> {
         for chunk in self.get_chunks() {
             match chunk {
                 ZapLeafChunk::Entry { int_size, next_chunk_id: _, name_chunk_id, name_length, value_chunk_id, nvalues, collision_differentiator: _, hash: _ } => {
@@ -108,40 +155,38 @@ impl ZapLeaf {
                     let name_length = usize::from(*name_length);
                     let nvalues = usize::from(*nvalues);
 
-                    let name_chunk = self.read_data_starting_at_chunk(usize::from(*name_chunk_id), name_length-1).unwrap();
-                    let value_chunk = self.read_data_starting_at_chunk(usize::from(*value_chunk_id), nvalues * int_size).unwrap();
-                    let name = std::str::from_utf8(&name_chunk).unwrap();
-                    let fat_zap_name_repeated = || {
-                        panic!("Fat zap name repeated, this is not supported!");
-                    };
+                    let name_chunk = self.read_data_starting_at_chunk(usize::from(*name_chunk_id), name_length-1)?;
+                    let value_chunk = self.read_data_starting_at_chunk(usize::from(*value_chunk_id), nvalues * int_size)?;
+                    let name = std::str::from_utf8(&name_chunk).ok()?;
+  
 
                     match int_size {
                         8 if nvalues == 1 => {
-                            let value = value_chunk.iter().copied().read_u64_be().unwrap();
-                            if hashmap.insert(name.to_owned(), Value::U64(value)).is_some() {fat_zap_name_repeated()}
+                            let value = value_chunk.iter().copied().read_u64_be()?;
+                            if hashmap.insert(name.to_owned(), Value::U64(value)).is_some() {zap_name_repeated()}
                         }
 
                         8 if nvalues > 1 => {
                             let mut values = Vec::<u64>::new();
                             let mut iter = value_chunk.iter().copied();
                             for _ in 0..nvalues {
-                                values.push(iter.read_u64_be().unwrap());
+                                values.push(iter.read_u64_be()?);
                             }
-                            if hashmap.insert(name.to_owned(), Value::U64Array(values)).is_some() {fat_zap_name_repeated()}
+                            if hashmap.insert(name.to_owned(), Value::U64Array(values)).is_some() {zap_name_repeated()}
                         }
 
                         1 if nvalues == 1 => {
-                            let value = value_chunk.iter().copied().read_u8().unwrap();
-                            if hashmap.insert(name.to_owned(), Value::Byte(value)).is_some() {fat_zap_name_repeated()}
+                            let value = value_chunk.iter().copied().read_u8()?;
+                            if hashmap.insert(name.to_owned(), Value::Byte(value)).is_some() {zap_name_repeated()}
                         }
 
                         1 if nvalues > 1 => {
                             let mut values = Vec::<u8>::new();
                             let mut iter = value_chunk.iter().copied();
                             for _ in 0..nvalues {
-                                values.push(iter.read_u8().unwrap());
+                                values.push(iter.read_u8()?);
                             }
-                            if hashmap.insert(name.to_owned(), Value::ByteArray(values)).is_some() {fat_zap_name_repeated()}
+                            if hashmap.insert(name.to_owned(), Value::ByteArray(values)).is_some() {zap_name_repeated()}
                         }
 
                         _ => todo!("Implement reading: {} values of size: {}", nvalues, int_size)
@@ -151,6 +196,7 @@ impl ZapLeaf {
                 ZapLeafChunk::Free { next_chunk_id: _ } => (),
             }
         }
+        Some(())
     }
 
     pub fn read_data_starting_at_chunk(&self, chunk_id: usize, size: usize) -> Option<Vec<u8>> {
@@ -381,24 +427,29 @@ impl ZapHeader {
         };
     }
 
-    pub fn unwrap_fat(&self) -> &FatZapHeader {
-        match self {
-            Self::FatZap(header) => header,
-            _ => panic!("Expected to get a fat zap, got a micro zap!")
-        }
-    }
-
-    pub fn dump_contents(&self, parent_dnode: &mut DNodeObjectDirectory, vdevs: &mut Vdevs) -> HashMap<String, Value> {
+    pub fn dump_contents(&self, parent_dnode: &mut DNodeBase, vdevs: &mut Vdevs) -> Option<HashMap<String, Value>> {
         let mut result = HashMap::<String, Value>::new();
-        let header = self.unwrap_fat();
-        let mut leafs_read = HashSet::<u64>::new();
-        for i in 0..header.get_hash_table_size() {
-            let block_id = header.read_hash_table_at(i);
-            if !leafs_read.insert(block_id) { continue; }
-            let leaf = ZapLeaf::from_bytes_le(&mut parent_dnode.0.read_block(block_id as usize, vdevs).unwrap().iter().copied(), parent_dnode.0.parse_data_block_size()).unwrap();
-            leaf.dump_contents_into(&mut result);
+        match self {
+            ZapHeader::FatZap(header) => {
+                let mut leafs_read = HashSet::<u64>::new();
+                for i in 0..header.get_hash_table_size() {
+                    let block_id = header.read_hash_table_at(i);
+                    if !leafs_read.insert(block_id) { continue; }
+                    let leaf = ZapLeaf::from_bytes_le(&mut parent_dnode.read_block(block_id as usize, vdevs).ok()?.iter().copied(), parent_dnode.parse_data_block_size())?;
+                    leaf.dump_contents_into(&mut result)?;
+                }
+            },
+            ZapHeader::MicroZap => {
+                let data = parent_dnode.read_block(0, vdevs).ok()?;
+                let mut data = data.iter().copied();
+                data.skip_n_bytes(128);
+                let nentries = (parent_dnode.parse_data_block_size()-128)/MicroZapEntry::get_ondisk_size();
+                for _ in 0..nentries {
+                    let entry = MicroZapEntry::from_bytes_le(&mut data)?;
+                    entry.dump_contents_into(&mut result)?;
+                }
+            },
         }
-
-        result
+        Some(result)
     }
 }
