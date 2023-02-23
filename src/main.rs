@@ -134,7 +134,8 @@ struct Uberblock {
 
 const UBERBLOCK_MAGIC: u64 = 0x00bab10c;
 impl Uberblock {
-   pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<Uberblock> {
+   pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<Uberblock> 
+   where Iter: Iterator<Item = u8> + Clone {
         let ub_magic = data.read_u64_le()?;
 
         // Verify magic, to make sure we are using the correct endianness
@@ -258,5 +259,13 @@ fn main() {
     let master_node_zap_header = head_dataset_master_node.get_zap_header(&mut vdevs).unwrap();
     let master_node_zap_data = master_node_zap_header.dump_contents(&mut head_dataset_master_node.0, &mut vdevs).unwrap();
 
-    println!("{:?}", master_node_zap_data);
+    let zap::Value::U64(root_number) = master_node_zap_data["ROOT"] else {
+        panic!("ROOT zap entry is not a number!");
+    };
+
+    let DNode::DirectoryContents(root_node) = head_dataset_object_set.get_dnode_at(root_number as usize, &mut vdevs).unwrap() else {
+        panic!("DNode {} which is the root dnode is not a directory contents node!", root_number);
+    };
+
+    println!("{:?}", root_node);
 }

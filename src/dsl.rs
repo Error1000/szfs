@@ -120,7 +120,8 @@ pub struct DSLDatasetData {
 }
 
 impl DSLDatasetData {
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<DSLDatasetData> {
+    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<DSLDatasetData> 
+    where Iter: Iterator<Item = u8> + Clone {
         Some(DSLDatasetData {
             parent_directory_object_number: data.read_u64_le()?, 
             previous_snapshot_object_number: data.read_u64_le()?, 

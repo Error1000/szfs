@@ -11,7 +11,8 @@ pub struct ZilHeader {
 impl ZilHeader {
     pub fn get_ondisk_size() -> usize { BlockPointer::get_ondisk_size()+8*core::mem::size_of::<u64>() }
 
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<ZilHeader> {
+    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<ZilHeader> 
+    where Iter: Iterator<Item = u8> + Clone {
         let res = ZilHeader {
             claim_txg: data.read_u64_le()?,
             highest_replayed_seq_number: data.read_u64_le()?,

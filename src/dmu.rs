@@ -70,7 +70,9 @@ pub enum BonusType {
     SpaceMapHeader = 7,
     DSLDirectory = 12,
     DSLDataset = 16,
-    ZNode = 17
+    ZNode = 17,
+    // Source: https://github.com/openzfs/zfs/blob/master/include/sys/dmu.h#L226
+    SystemAttributes = 44,
 }
 
 impl BonusType {
@@ -82,6 +84,7 @@ impl BonusType {
             12 => Self::DSLDirectory,
             16 => Self::DSLDataset,
             17 => Self::ZNode,
+            44 => Self::SystemAttributes,
             _ => return None
         })
     }
@@ -377,12 +380,18 @@ impl DNodeMasterNode {
     }
 }
 
+
+#[derive(Debug)]
+pub struct DNodeDirectoryContents (pub DNodeBase);
+
+
 #[derive(Debug)]
 pub enum DNode {
     ObjectDirectory(DNodeObjectDirectory),
     DSLDirectory(DNodeDSLDirectory),
     DSLDataset(DNodeDSLDataset),
-    MasterNode(DNodeMasterNode)
+    MasterNode(DNodeMasterNode),
+    DirectoryContents(DNodeDirectoryContents),
 }
 
 impl DNode {
@@ -410,6 +419,7 @@ impl DNode {
                     BonusType::DSLDirectory => DNode::DSLDirectory(DNodeDSLDirectory(dnode_base)),
                     BonusType::DSLDataset => todo!(),
                     BonusType::ZNode => todo!(),
+                    BonusType::SystemAttributes => todo!(),
                 }
             },
             ObjType::DSLDatasetChildMap => todo!(),
@@ -423,12 +433,13 @@ impl DNode {
                     BonusType::DSLDirectory => todo!(),
                     BonusType::DSLDataset => DNode::DSLDataset(DNodeDSLDataset(dnode_base)),
                     BonusType::ZNode => todo!(),
+                    BonusType::SystemAttributes => todo!(),
                 }
             },
             ObjType::ZNode => todo!(),
             ObjType::AcessControlList => todo!(),
             ObjType::PlainFileContents => todo!(),
-            ObjType::DirectoryContents => todo!(),
+            ObjType::DirectoryContents => DNode::DirectoryContents(DNodeDirectoryContents(dnode_base)),
             ObjType::MasterNode => DNode::MasterNode(DNodeMasterNode(dnode_base)),
             ObjType::DeleteQueue => todo!(),
             ObjType::ZVol => todo!(),

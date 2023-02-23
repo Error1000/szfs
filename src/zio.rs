@@ -156,7 +156,7 @@ impl CompressionMethod {
 // 100 00000 00001011 00000111 0 0001111 0000000000000000 0000000000000111
 // 3   5     8        8        1 7       16	              16
 
-pub struct BlockPointer {
+pub struct NormalBlockPointer {
     dvas: [DataVirtualAddress; 3],
     level: usize,
     fill: u64,
@@ -169,16 +169,16 @@ pub struct BlockPointer {
     checksum: [u64; 4]
 }
 
-impl Debug for BlockPointer {
+impl Debug for NormalBlockPointer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BlockPointer").field("dvas", &self.dvas).field("level", &self.level).field("fill", &self.fill).field("logical_birth_txg", &self.logical_birth_txg).field("typ", &self.typ).field("checksum_method", &self.checksum_method).field("compression_method", &self.compression_method).field("physical_size", &self.parse_physical_size()).field("logical_size", &self.parse_logical_size()).field("checksum", &self.checksum).finish()
+        f.debug_struct("NormalBlockPointer").field("dvas", &self.dvas).field("level", &self.level).field("fill", &self.fill).field("logical_birth_txg", &self.logical_birth_txg).field("typ", &self.typ).field("checksum_method", &self.checksum_method).field("compression_method", &self.compression_method).field("physical_size", &self.parse_physical_size()).field("logical_size", &self.parse_logical_size()).field("checksum", &self.checksum).finish()
     }
 }
 
-impl BlockPointer {
-    pub fn get_ondisk_size() -> usize { 128 }
+
+impl NormalBlockPointer {
     
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<BlockPointer> {
+    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<NormalBlockPointer> {
         let dva1 = DataVirtualAddress::from_bytes_le(data)?;
         let dva2 = DataVirtualAddress::from_bytes_le(data)?;
         let dva3 = DataVirtualAddress::from_bytes_le(data)?;
@@ -186,9 +186,18 @@ impl BlockPointer {
 
         // Make sure we don't accidentally read an embedded block pointer
         if (info>>39)&1 != 0 { // Check embedded bit
-            todo!("Handle embedded block pointers!");
+            use crate::ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Attempted to read embedded block pointer as normal block pointer!");
+            return None; // This function only handles normal block pointers
         }
         
+        // Check encrypted bit
+        if (info>>61)&1 != 0 {
+            use crate::ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Attempted to read encrypted block pointer as normal block pointer!");
+            return None;
+        }
+
         // Check endianness bit just in case
         if (info>>63)&1 != 1 {
             return None;
@@ -200,14 +209,14 @@ impl BlockPointer {
         let fill_count = data.read_u64_le()?;
         let checksum = [data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?];
 
-        Some(BlockPointer { 
+        Some(NormalBlockPointer { 
             dvas: [dva1, dva2, dva3], 
             level: ((info >> 56)&0b1_1111) as usize, 
             fill: fill_count,
             logical_birth_txg,
             typ: dmu::ObjType::from_value(((info >> 48)&0b1111_1111) as usize)?, 
             checksum_method: ChecksumMethod::from_value(((info >> 40)&0b1111_1111) as usize)?, 
-            compression_method: CompressionMethod::from_value(((info >> 32)&0b111_1111) as usize)?, 
+            compression_method: CompressionMethod::from_value(((info >> 32)&0b0111_1111) as usize)?, 
             physical_size_in_sectors_minus_one: ((info >> 16) & 0b1111_1111_1111_1111) as u16, 
             logical_size_in_sectors_minus_one: ((info >> 0) & 0b1111_1111_1111_1111) as u16, 
             checksum
@@ -215,21 +224,18 @@ impl BlockPointer {
     }
 
 
-    // Returns: Logical size in bytes
+    // Returns: Logical size of the data pointed to by the block pointer, in bytes
     pub fn parse_logical_size(&self) -> u64 {
         // All sizes are stored as the number of 512 byte sectors (minus one) needed to represent the size of this block. ( http://www.giis.co.in/Zfs_ondiskformat.pdf ( section 2.6 ) )
         (self.logical_size_in_sectors_minus_one as u64+1)*512
     }
 
-    // Returns: Physical size in bytes
+    // Returns: Physical size of the data pointed to by the block pointer, in bytes
     pub fn parse_physical_size(&self) -> u64 {
         // All sizes are stored as the number of 512 byte sectors (minus one) needed to represent the size of this block. ( http://www.giis.co.in/Zfs_ondiskformat.pdf ( section 2.6 ) )
         (self.physical_size_in_sectors_minus_one as u64+1)*512
     }
 
-    pub fn get_checksum(&self) -> &[u64; 4] {
-        &self.checksum
-    }
 
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data pointed to by the gang blocks once stitched together, and it is done before decompression
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
@@ -242,7 +248,7 @@ impl BlockPointer {
                 _ => todo!("Implement {:?} checksum!", self.checksum_method),
             };
 
-            if &computed_checksum != self.get_checksum() {
+            if computed_checksum != self.checksum {
                 use crate::ansi_color::*;
                 println!("{YELLOW}Warning{WHITE}: Invalid checksum for dva: {:?}, ignoring this dva.", dva);
                 continue;
@@ -264,5 +270,122 @@ impl BlockPointer {
         }
 
         return Err(());
+    }
+}
+
+
+
+// Reference: https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L265
+
+#[derive(Debug)]
+pub struct EmbeddedBlockPointer {
+    payload: Vec<u8>,
+    logical_birth_txg: u64,
+    level: usize,
+    typ: dmu::ObjType,
+    embedded_data_type: dmu::ObjType,
+    compression_method: CompressionMethod,
+    physical_size_in_bytes: u8,
+    logical_size_in_bytes: u32, // only takes up 24 bits on disk
+}
+
+impl EmbeddedBlockPointer {
+    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<EmbeddedBlockPointer> {
+        let mut payload = Vec::<u8>::new();
+        for _ in 0..6*core::mem::size_of::<u64>() {
+            payload.push(data.read_u8()?);
+        }
+
+        let info = data.read_u64_le()?;
+        
+        // Make sure we don't accidentally read an embedded block pointer
+        if (info>>39)&1 != 1 { // Check embedded bit
+            use crate::ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Attempted to read normal block pointer as embedded block pointer!");
+            return None; // This function only handles normal block pointers
+        }
+        
+        // Check encrypted bit
+        if (info>>61)&1 != 0 {
+            use crate::ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Attempted to read encrypted block pointer as embedded block pointer!");
+            return None;
+        }
+
+        // Check endianness bit just in case
+        if (info>>63)&1 != 1 {
+            return None;
+        }
+
+        for _ in 0..3*core::mem::size_of::<u64>() {
+            payload.push(data.read_u8()?);
+        }
+
+        let logical_birth_txg = data.read_u64_le()?;
+
+        for _ in 0..5*core::mem::size_of::<u64>() {
+            payload.push(data.read_u8()?);
+        }
+
+        Some(EmbeddedBlockPointer { 
+            payload, 
+            logical_birth_txg, 
+            level: ((info >> 56)&0b1_1111) as usize, 
+            typ: dmu::ObjType::from_value(((info >> 48)&0b1111_1111) as usize)?, 
+            embedded_data_type: dmu::ObjType::from_value(((info >> 40)&0b1111_1111) as usize)?, 
+            compression_method: CompressionMethod::from_value(((info >> 32)&0b0111_1111) as usize)?, 
+            physical_size_in_bytes: ((info >> 24) & 0xFF) as u8, 
+            logical_size_in_bytes: ((info >> 0) & 0xFF_FF_FF) as u32
+        })
+    }
+}
+
+
+#[derive(Debug)]
+pub enum BlockPointer {
+    Normal(NormalBlockPointer),
+    Embedded(EmbeddedBlockPointer)
+}
+
+impl BlockPointer {
+    pub fn get_ondisk_size() -> usize { 128 }
+
+    pub fn get_info_form_bytes_le(mut data: impl Iterator<Item = u8>) -> Option<u64> {
+        data.skip_n_bytes(6*core::mem::size_of::<u64>());
+        data.read_u64_le()
+    }
+
+    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<BlockPointer> 
+    where Iter: Iterator<Item = u8> + Clone {
+        let info = Self::get_info_form_bytes_le(data.clone())?;
+        let is_embedded = ((info>>39)&1) != 0;
+        if is_embedded {
+            Some(BlockPointer::Embedded(EmbeddedBlockPointer::from_bytes_le(data)?))
+        } else {
+            Some(Self::Normal(NormalBlockPointer::from_bytes_le(data)?))
+        }
+    }
+
+    // Returns: Logical size of the data pointed to by the block pointer, in bytes
+    pub fn parse_logical_size(&self) -> u64 {
+        match self {
+            BlockPointer::Normal(block_pointer) => block_pointer.parse_logical_size(),
+            BlockPointer::Embedded(block_pointer) => block_pointer.logical_size_in_bytes.into() 
+        }
+    }
+
+    // Returns: Physical size of the data pointed to by the block pointer, in bytes
+    pub fn parse_physical_size(&self) -> u64 {
+        match self {
+            BlockPointer::Normal(block_pointer) => block_pointer.parse_physical_size(),
+            BlockPointer::Embedded(block_pointer) => block_pointer.physical_size_in_bytes.into()
+        }
+    }
+
+    pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
+        match self {
+            BlockPointer::Normal(block_poiner) => block_poiner.dereference(vdevs),
+            BlockPointer::Embedded(block_pointer) => Ok(block_pointer.payload.clone())
+        }
     }
 }
