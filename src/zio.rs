@@ -365,16 +365,24 @@ impl EmbeddedBlockPointer {
         })
     }
 
+    // Source: https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L333
+    // And: https://github.com/openzfs/zfs/blob/master/include/sys/bitops.h#L66
     pub fn parse_logical_size(&self) -> u64 {
         u64::from(self.logical_size_in_bytes)+1
     }
 
+    // Source: https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L341
+    // And: https://github.com/openzfs/zfs/blob/master/include/sys/bitops.h#L66
     pub fn parse_physical_size(&self) -> u64 {
         u64::from(self.physical_size_in_bytes)+1
     }
 
     pub fn dereference(&mut self) -> Result<Vec<u8>, ()> {
-        let data = self.payload.clone();
+        let mut data = self.payload.clone();
+
+        if data.len() > self.parse_physical_size().try_into().unwrap() {
+            data.resize(self.parse_physical_size().try_into().unwrap(), 0);
+        }
 
         let data = match self.compression_method {
             CompressionMethod::Off => data,

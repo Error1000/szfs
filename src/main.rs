@@ -269,5 +269,6 @@ fn main() {
 
     let root_node_zap_header = root_node.get_zap_header(&mut vdevs).unwrap();
     let root_node_zap_data = root_node_zap_header.dump_contents(&mut root_node.0, &mut vdevs).unwrap();
+
     println!("{:?}", root_node_zap_data);
 }

@@ -108,6 +108,7 @@ impl MicroZapEntry {
     pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) -> Option<()>{
         let nul_index = self.name.iter().position(|byte| *byte == 0)?;
         let name = std::str::from_utf8(&self.name[0..nul_index]).ok()?;
+        if name.len() == 0 { return None; }
         if hashmap.insert(name.to_string(), Value::U64(self.value)).is_some() { micro_zap_name_repeated() }
         Some(())
     }
@@ -162,7 +163,7 @@ impl ZapLeaf {
                     let name_chunk = self.read_data_starting_at_chunk(usize::from(*name_chunk_id), name_length-1)?;
                     let value_chunk = self.read_data_starting_at_chunk(usize::from(*value_chunk_id), nvalues * int_size)?;
                     let name = std::str::from_utf8(&name_chunk).ok()?;
-  
+                    
 
                     match int_size {
                         8 if nvalues == 1 => {
@@ -423,7 +424,7 @@ impl ZapHeader {
             },
 
             ZapType::MicroZap => {
-                data.skip_n_bytes(128-core::mem::size_of::<u64>())?;
+                data.skip_n_bytes(64-core::mem::size_of::<u64>())?;
                 Some(Self::MicroZap)
             },
 
@@ -440,17 +441,17 @@ impl ZapHeader {
                     let block_id = header.read_hash_table_at(i);
                     if !leafs_read.insert(block_id) { continue; }
                     let leaf = ZapLeaf::from_bytes_le(&mut parent_dnode.read_block(block_id as usize, vdevs).ok()?.iter().copied(), parent_dnode.parse_data_block_size())?;
-                    leaf.dump_contents_into(&mut result)?;
+                    let _= leaf.dump_contents_into(&mut result);
                 }
             },
             ZapHeader::MicroZap => {
                 let data = parent_dnode.read_block(0, vdevs).ok()?;
                 let mut data = data.iter().copied();
-                data.skip_n_bytes(128);
-                let nentries = (parent_dnode.parse_data_block_size()-128)/MicroZapEntry::get_ondisk_size();
+                data.skip_n_bytes(64);
+                let nentries = (parent_dnode.parse_data_block_size()-64)/MicroZapEntry::get_ondisk_size();
                 for _ in 0..nentries {
                     let entry = MicroZapEntry::from_bytes_le(&mut data)?;
-                    entry.dump_contents_into(&mut result)?;
+                    let _ = entry.dump_contents_into(&mut result);
                 }
             },
         }
