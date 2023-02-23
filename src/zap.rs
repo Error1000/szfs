@@ -65,8 +65,12 @@ impl Debug for Value {
 }
 
 
-fn zap_name_repeated() {
-    panic!("Fat zap name repeated, this is not supported!");
+fn micro_zap_name_repeated() {
+    panic!("Micro Zap name repeated, this is not supported!");
+}
+
+fn fat_zap_name_repeated() {
+    panic!("Fat Zap name repeated, this is not supported!");
 }
 
 pub struct MicroZapEntry {
@@ -104,7 +108,7 @@ impl MicroZapEntry {
     pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) -> Option<()>{
         let nul_index = self.name.iter().position(|byte| *byte == 0)?;
         let name = std::str::from_utf8(&self.name[0..nul_index]).ok()?;
-        if hashmap.insert(name.to_string(), Value::U64(self.value)).is_some() { zap_name_repeated() }
+        if hashmap.insert(name.to_string(), Value::U64(self.value)).is_some() { micro_zap_name_repeated() }
         Some(())
     }
 }
@@ -163,7 +167,7 @@ impl ZapLeaf {
                     match int_size {
                         8 if nvalues == 1 => {
                             let value = value_chunk.iter().copied().read_u64_be()?;
-                            if hashmap.insert(name.to_owned(), Value::U64(value)).is_some() {zap_name_repeated()}
+                            if hashmap.insert(name.to_owned(), Value::U64(value)).is_some() { fat_zap_name_repeated()}
                         }
 
                         8 if nvalues > 1 => {
@@ -172,12 +176,12 @@ impl ZapLeaf {
                             for _ in 0..nvalues {
                                 values.push(iter.read_u64_be()?);
                             }
-                            if hashmap.insert(name.to_owned(), Value::U64Array(values)).is_some() {zap_name_repeated()}
+                            if hashmap.insert(name.to_owned(), Value::U64Array(values)).is_some() { fat_zap_name_repeated()}
                         }
 
                         1 if nvalues == 1 => {
                             let value = value_chunk.iter().copied().read_u8()?;
-                            if hashmap.insert(name.to_owned(), Value::Byte(value)).is_some() {zap_name_repeated()}
+                            if hashmap.insert(name.to_owned(), Value::Byte(value)).is_some() { fat_zap_name_repeated()}
                         }
 
                         1 if nvalues > 1 => {
@@ -186,7 +190,7 @@ impl ZapLeaf {
                             for _ in 0..nvalues {
                                 values.push(iter.read_u8()?);
                             }
-                            if hashmap.insert(name.to_owned(), Value::ByteArray(values)).is_some() {zap_name_repeated()}
+                            if hashmap.insert(name.to_owned(), Value::ByteArray(values)).is_some() { fat_zap_name_repeated()}
                         }
 
                         _ => todo!("Implement reading: {} values of size: {}", nvalues, int_size)

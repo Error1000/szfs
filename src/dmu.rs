@@ -255,7 +255,9 @@ impl DNodeBase {
         assert!(self.n_indirect_levels >= 1);
 
         if self.n_indirect_levels == 1 { // There is no indirection
-            return Ok(self.block_pointers[block_id].dereference(vdevs)?);
+            let block_data = self.block_pointers[block_id].dereference(vdevs)?;
+            assert!(block_data.len() == self.parse_data_block_size());    
+            return Ok(block_data);
         }
 
         // If we got here then n_indirect_levels must be 2 or greater
@@ -384,6 +386,11 @@ impl DNodeMasterNode {
 #[derive(Debug)]
 pub struct DNodeDirectoryContents (pub DNodeBase);
 
+impl DNodeDirectoryContents {
+    pub fn get_zap_header(&mut self, vdevs: &mut Vdevs) -> Option<zap::ZapHeader> {
+        zap::ZapHeader::from_bytes_le(&mut self.0.read_block(0, vdevs).ok()?.iter().copied(), self.0.parse_data_block_size())
+    }   
+}
 
 #[derive(Debug)]
 pub enum DNode {

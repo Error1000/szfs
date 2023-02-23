@@ -171,7 +171,19 @@ pub struct NormalBlockPointer {
 
 impl Debug for NormalBlockPointer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NormalBlockPointer").field("dvas", &self.dvas).field("level", &self.level).field("fill", &self.fill).field("logical_birth_txg", &self.logical_birth_txg).field("typ", &self.typ).field("checksum_method", &self.checksum_method).field("compression_method", &self.compression_method).field("physical_size", &self.parse_physical_size()).field("logical_size", &self.parse_logical_size()).field("checksum", &self.checksum).finish()
+        f
+        .debug_struct("NormalBlockPointer")
+        .field("dvas", &self.dvas)
+        .field("level", &self.level)
+        .field("fill", &self.fill)
+        .field("logical_birth_txg", &self.logical_birth_txg)
+        .field("typ", &self.typ)
+        .field("checksum_method", &self.checksum_method)
+        .field("compression_method", &self.compression_method)
+        .field("physical_size", &self.parse_physical_size())
+        .field("logical_size", &self.parse_logical_size())
+        .field("checksum", &self.checksum)
+        .finish()
     }
 }
 
@@ -277,7 +289,6 @@ impl NormalBlockPointer {
 
 // Reference: https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L265
 
-#[derive(Debug)]
 pub struct EmbeddedBlockPointer {
     payload: Vec<u8>,
     logical_birth_txg: u64,
@@ -287,6 +298,21 @@ pub struct EmbeddedBlockPointer {
     compression_method: CompressionMethod,
     physical_size_in_bytes: u8,
     logical_size_in_bytes: u32, // only takes up 24 bits on disk
+}
+
+impl Debug for EmbeddedBlockPointer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f
+        .debug_struct("EmbeddedBlockPointer")
+        .field("payload", &self.payload)
+        .field("logical_birth_txg", &self.logical_birth_txg)
+        .field("level", &self.level)
+        .field("typ", &self.typ)
+        .field("embedded_data_type", &self.embedded_data_type)
+        .field("compression_method", &self.compression_method)
+        .field("physical_size", &self.parse_physical_size())
+        .field("logical_size", &self.parse_logical_size()).finish()
+    }
 }
 
 impl EmbeddedBlockPointer {
@@ -338,6 +364,32 @@ impl EmbeddedBlockPointer {
             logical_size_in_bytes: ((info >> 0) & 0xFF_FF_FF) as u32
         })
     }
+
+    pub fn parse_logical_size(&self) -> u64 {
+        u64::from(self.logical_size_in_bytes)+1
+    }
+
+    pub fn parse_physical_size(&self) -> u64 {
+        u64::from(self.physical_size_in_bytes)+1
+    }
+
+    pub fn dereference(&mut self) -> Result<Vec<u8>, ()> {
+        let data = self.payload.clone();
+
+        let data = match self.compression_method {
+            CompressionMethod::Off => data,
+            CompressionMethod::Lz4 | CompressionMethod::On => {
+                let comp_size = u32::from_be_bytes(data[0..4].try_into().unwrap());
+                // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
+                lz4::lz4_decompress_blocks(&mut data[4..comp_size as usize+4].iter().copied()).map_err(|_| ())?
+            }
+            _ => todo!("Implement {:?} compression!", self.compression_method),
+        };
+
+        assert!(data.len() == self.parse_logical_size() as usize);
+        return Ok(data);
+    }
+
 }
 
 
@@ -370,7 +422,7 @@ impl BlockPointer {
     pub fn parse_logical_size(&self) -> u64 {
         match self {
             BlockPointer::Normal(block_pointer) => block_pointer.parse_logical_size(),
-            BlockPointer::Embedded(block_pointer) => block_pointer.logical_size_in_bytes.into() 
+            BlockPointer::Embedded(block_pointer) => block_pointer.parse_logical_size()
         }
     }
 
@@ -378,14 +430,14 @@ impl BlockPointer {
     pub fn parse_physical_size(&self) -> u64 {
         match self {
             BlockPointer::Normal(block_pointer) => block_pointer.parse_physical_size(),
-            BlockPointer::Embedded(block_pointer) => block_pointer.physical_size_in_bytes.into()
+            BlockPointer::Embedded(block_pointer) => block_pointer.parse_physical_size()
         }
     }
 
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
         match self {
             BlockPointer::Normal(block_poiner) => block_poiner.dereference(vdevs),
-            BlockPointer::Embedded(block_pointer) => Ok(block_pointer.payload.clone())
+            BlockPointer::Embedded(block_pointer) => block_pointer.dereference()
         }
     }
 }

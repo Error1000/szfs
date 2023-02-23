@@ -263,9 +263,11 @@ fn main() {
         panic!("ROOT zap entry is not a number!");
     };
 
-    let DNode::DirectoryContents(root_node) = head_dataset_object_set.get_dnode_at(root_number as usize, &mut vdevs).unwrap() else {
+    let DNode::DirectoryContents(mut root_node) = head_dataset_object_set.get_dnode_at(root_number as usize, &mut vdevs).unwrap() else {
         panic!("DNode {} which is the root dnode is not a directory contents node!", root_number);
     };
 
-    println!("{:?}", root_node);
+    let root_node_zap_header = root_node.get_zap_header(&mut vdevs).unwrap();
+    let root_node_zap_data = root_node_zap_header.dump_contents(&mut root_node.0, &mut vdevs).unwrap();
+    println!("{:?}", root_node_zap_data);
 }
