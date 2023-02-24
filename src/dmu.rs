@@ -384,13 +384,18 @@ impl DNodeMasterNode {
 
 
 #[derive(Debug)]
-pub struct DNodeDirectoryContents (pub DNodeBase);
+pub struct DNodeDirectoryContents(pub DNodeBase);
 
 impl DNodeDirectoryContents {
     pub fn get_zap_header(&mut self, vdevs: &mut Vdevs) -> Option<zap::ZapHeader> {
         zap::ZapHeader::from_bytes_le(&mut self.0.read_block(0, vdevs).ok()?.iter().copied(), self.0.parse_data_block_size())
     }   
 }
+
+
+#[derive(Debug)]
+pub struct DNodePlainFileContents(pub DNodeBase);
+
 
 #[derive(Debug)]
 pub enum DNode {
@@ -399,6 +404,7 @@ pub enum DNode {
     DSLDataset(DNodeDSLDataset),
     MasterNode(DNodeMasterNode),
     DirectoryContents(DNodeDirectoryContents),
+    PlainFileContents(DNodePlainFileContents)
 }
 
 impl DNode {
@@ -445,7 +451,7 @@ impl DNode {
             },
             ObjType::ZNode => todo!(),
             ObjType::AcessControlList => todo!(),
-            ObjType::PlainFileContents => todo!(),
+            ObjType::PlainFileContents => DNode::PlainFileContents(DNodePlainFileContents(dnode_base)),
             ObjType::DirectoryContents => DNode::DirectoryContents(DNodeDirectoryContents(dnode_base)),
             ObjType::MasterNode => DNode::MasterNode(DNodeMasterNode(dnode_base)),
             ObjType::DeleteQueue => todo!(),

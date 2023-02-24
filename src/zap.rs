@@ -108,7 +108,7 @@ impl MicroZapEntry {
     pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) -> Option<()>{
         let nul_index = self.name.iter().position(|byte| *byte == 0)?;
         let name = std::str::from_utf8(&self.name[0..nul_index]).ok()?;
-        if name.len() == 0 { return None; }
+        if name.len() == 0 { return None; } // Deal with empty entries ( entires that are all zeroes )
         if hashmap.insert(name.to_string(), Value::U64(self.value)).is_some() { micro_zap_name_repeated() }
         Some(())
     }
@@ -441,7 +441,7 @@ impl ZapHeader {
                     let block_id = header.read_hash_table_at(i);
                     if !leafs_read.insert(block_id) { continue; }
                     let leaf = ZapLeaf::from_bytes_le(&mut parent_dnode.read_block(block_id as usize, vdevs).ok()?.iter().copied(), parent_dnode.parse_data_block_size())?;
-                    let _= leaf.dump_contents_into(&mut result);
+                    leaf.dump_contents_into(&mut result)?;
                 }
             },
             ZapHeader::MicroZap => {
@@ -451,6 +451,9 @@ impl ZapHeader {
                 let nentries = (parent_dnode.parse_data_block_size()-64)/MicroZapEntry::get_ondisk_size();
                 for _ in 0..nentries {
                     let entry = MicroZapEntry::from_bytes_le(&mut data)?;
+                    // Ignore empty/broken entries
+                    // NOTE: Empty entries (entries that are all zeroes) are normal, as far as i can tell
+                    // TODO: Should we bail out on broken entries, which is what we do for fat zaps
                     let _ = entry.dump_contents_into(&mut result);
                 }
             },

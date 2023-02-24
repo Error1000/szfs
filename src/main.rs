@@ -270,5 +270,15 @@ fn main() {
     let root_node_zap_header = root_node.get_zap_header(&mut vdevs).unwrap();
     let root_node_zap_data = root_node_zap_header.dump_contents(&mut root_node.0, &mut vdevs).unwrap();
 
-    println!("{:?}", root_node_zap_data);
+    let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.txt"] else {
+        panic!("File entry is not a number!");
+    };
+
+    file_node_number &= !(1 << 63); // TODO: Figure out why the first bit is set
+
+    let DNode::PlainFileContents(mut file_node) = head_dataset_object_set.get_dnode_at(file_node_number as usize, &mut vdevs).unwrap() else {
+        panic!("DNode {} which is the file node is not a plain file contents node!", file_node_number);
+    };
+
+    println!("{:?}", file_node.0.read(0, file_node.0.get_data_size(), &mut vdevs));
 }
