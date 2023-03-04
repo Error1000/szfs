@@ -3,7 +3,7 @@ use std::{fs::File, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::Metada
 
 use byte_iter::ByteIter;
 
-use crate::dmu::DNode;
+use crate::{dmu::DNode, zpl::SystemAttributes};
 
 mod nvlist;
 mod byte_iter;
@@ -14,6 +14,7 @@ mod fletcher;
 mod lz4;
 mod zap;
 mod dsl;
+mod zpl;
 
 mod ansi_color {
     pub const RED: &str = "\u{001b}[31m";
@@ -124,32 +125,32 @@ impl VdevLabel {
 
 #[derive(Debug)]
 struct Uberblock {
-    ub_magic: u64,
-    ub_version: u64,
-    ub_txg: u64,
-    ub_guid_sum: u64,
-    ub_timestamp: u64,
-    ub_rootbp: zio::BlockPointer
+    version: u64,
+    txg: u64,
+    guid_sum: u64,
+    timestamp: u64,
+    rootbp: zio::BlockPointer
 }
 
 const UBERBLOCK_MAGIC: u64 = 0x00bab10c;
 impl Uberblock {
    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<Uberblock> 
    where Iter: Iterator<Item = u8> + Clone {
-        let ub_magic = data.read_u64_le()?;
+        let magic = data.read_u64_le()?;
 
         // Verify magic, to make sure we are using the correct endianness
-        if ub_magic != UBERBLOCK_MAGIC {
+        if magic != UBERBLOCK_MAGIC {
+            use crate::ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Tried to parse uberblock with invalid magic!");
             return None;
         } 
 
         Some(Uberblock { 
-            ub_magic,
-            ub_version: data.read_u64_le()?, 
-            ub_txg: data.read_u64_le()?, 
-            ub_guid_sum: data.read_u64_le()?, 
-            ub_timestamp: data.read_u64_le()?, 
-            ub_rootbp: zio::BlockPointer::from_bytes_le(data)? 
+            version: data.read_u64_le()?, 
+            txg: data.read_u64_le()?, 
+            guid_sum: data.read_u64_le()?, 
+            timestamp: data.read_u64_le()?, 
+            rootbp: zio::BlockPointer::from_bytes_le(data)? 
         })
    }
 
@@ -167,6 +168,18 @@ impl Uberblock {
         }
    }
 }
+
+// TODO:
+// 1. Implement spill blocks
+// 2. Implement non-embedded fat zap tables
+// 3. Implement gang blocks
+// 4. Implement ZPL
+//      - https://github.com/openzfs/zfs/blob/master/module/zfs/sa.c#L49
+//      - https://github.com/openzfs/zfs/blob/master/include/sys/sa_impl.h#L152
+// 5. Implement RAIDZ
+// 6. Implement all nvlist values
+// 7. Implement all fat zap values
+// 8. Don't hardcode vdev layout and implement ability to try other labels instead of just using the first one
 
 fn main() {
     use crate::ansi_color::*;
@@ -209,18 +222,17 @@ fn main() {
         }
     }
     
-    // println!("Parsed nv_list: {:?}!", name_value_pairs);
+    // println!("{CYAN}Info{WHITE}: Parsed nv_list, {:?}!", name_value_pairs);
     println!("{CYAN}Info{WHITE}: Found {} uberblocks!", uberblocks.len());
-    uberblocks.sort_unstable_by(|a, b| a.ub_txg.cmp(&b.ub_txg));
+    uberblocks.sort_unstable_by(|a, b| a.txg.cmp(&b.txg));
 
         
     let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
-    // TODO: Don't hardcode this
     vdevs.insert(0usize, &mut vdev);
 
     let mut uberblock_search_info = None;
     for ub in uberblocks.iter_mut().rev() {
-        if let Ok(data) = ub.ub_rootbp.dereference(&mut vdevs) {
+        if let Ok(data) = ub.rootbp.dereference(&mut vdevs) {
             uberblock_search_info = Some((ub, data));
             break;
         }
@@ -233,8 +245,10 @@ fn main() {
     
     let DNode::ObjectDirectory(mut object_directory) = meta_object_set.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!")
     else {panic!("DNode 1 is not an object directory!"); };
-    let objdir_zap_header = object_directory.get_zap_header(&mut vdevs).unwrap();
-    let objdir_zap_data = objdir_zap_header.dump_contents(&mut object_directory.0, &mut vdevs).unwrap();
+    let objdir_zap_data = object_directory.dump_zap_contents(&mut vdevs).unwrap();
+    
+    println!("{CYAN}Info{WHITE}: Meta object set obj directory zap: {:?}", objdir_zap_data);
+
     let zap::Value::U64(root_dataset_number) = objdir_zap_data["root_dataset"] else {
         panic!("Couldn't read root_dataset id!");
     };
@@ -250,14 +264,24 @@ fn main() {
     let mut head_dataset_bonus = head_dataset.parse_bonus_data().unwrap();
     let head_dataset_blockpointer = head_dataset_bonus.get_block_pointer();
 
+    // Now we have access to the dataset we are interested in
     let mut head_dataset_object_set = dmu::ObjSet::from_bytes_le(&mut head_dataset_blockpointer.dereference(&mut vdevs).unwrap().iter().copied()).unwrap();
 
     let DNode::MasterNode(mut head_dataset_master_node) = head_dataset_object_set.get_dnode_at(1, &mut vdevs).unwrap() else {
         panic!("DNode 1 which is the master_node is not a master node!");
     };
     
-    let master_node_zap_header = head_dataset_master_node.get_zap_header(&mut vdevs).unwrap();
-    let master_node_zap_data = master_node_zap_header.dump_contents(&mut head_dataset_master_node.0, &mut vdevs).unwrap();
+    let master_node_zap_data = head_dataset_master_node.dump_zap_contents(&mut vdevs).unwrap();
+
+    println!("{CYAN}Info{WHITE}: Root dataset master node zap: {:?}", master_node_zap_data);
+
+
+    let zap::Value::U64(system_attributes_info_number) = master_node_zap_data["SA_ATTRS"] else {
+        panic!("SA_ATTRS entry is not a number!");
+    };
+
+    let mut system_attributes = SystemAttributes::from_attributes_node_number(system_attributes_info_number as usize, &mut head_dataset_object_set, &mut vdevs).unwrap();
+    println!("{CYAN}Info{WHITE}: {:?}", system_attributes);
 
     let zap::Value::U64(root_number) = master_node_zap_data["ROOT"] else {
         panic!("ROOT zap entry is not a number!");
@@ -267,18 +291,25 @@ fn main() {
         panic!("DNode {} which is the root dnode is not a directory contents node!", root_number);
     };
 
-    let root_node_zap_header = root_node.get_zap_header(&mut vdevs).unwrap();
-    let root_node_zap_data = root_node_zap_header.dump_contents(&mut root_node.0, &mut vdevs).unwrap();
+    let root_node_zap_data = root_node.dump_zap_contents(&mut vdevs).unwrap();
 
+    println!("Root directory: {:?}", root_node_zap_data);
     let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.txt"] else {
         panic!("File entry is not a number!");
     };
 
-    file_node_number &= !(1 << 63); // TODO: Figure out why the first bit is set
+    // Only bottom 48 bits are the actual object id
+    // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zfs_znode.h#L152
+    file_node_number &= (1 << 48) -1;
 
     let DNode::PlainFileContents(mut file_node) = head_dataset_object_set.get_dnode_at(file_node_number as usize, &mut vdevs).unwrap() else {
         panic!("DNode {} which is the file node is not a plain file contents node!", file_node_number);
     };
 
-    println!("{:?}", file_node.0.read(0, file_node.0.get_data_size(), &mut vdevs));
+    let file_info = system_attributes.parse_system_attributes_bytes_le(&mut file_node.0.get_bonus_data().iter().copied()).unwrap();
+    let zpl::Value::U64(file_len) = file_info["ZPL_SIZE"] else {
+        panic!("File length is not a number!");
+    };
+
+    println!("{:?}", file_node.0.read(0, file_len as usize, &mut vdevs));
 }

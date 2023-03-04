@@ -1,5 +1,5 @@
 use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer, Vdevs}, byte_iter::ByteIter, zil::ZilHeader, zap, dsl};
-use std::fmt::Debug;
+use std::{fmt::Debug, collections::HashMap};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ObjType {
@@ -15,49 +15,111 @@ pub enum ObjType {
     IntentLog = 9,
     DNode = 10,
     ObjSet = 11,
-    DSLDataset = 12,
-    DSLDatasetChildMap = 13,
-    ObjSetSnapshotMap = 14,
+    DSLDirectory = 12,
+    DSLDirectoryChildMap = 13,
+    DSLDataSetSnapshotMap = 14,
     DSLProperties = 15,
-    DSLObjSet = 16,
+    DSLDataset = 16,
     ZNode = 17,
-    AcessControlList = 18,
+    OldAccessControlList = 18,
     PlainFileContents = 19,
     DirectoryContents = 20,
     MasterNode = 21,
     DeleteQueue = 22,
     ZVol = 23,
-    ZVolProperties = 24
+    ZVolProperties = 24,
+
+    PlainOther = 25,
+    U64Other = 26,
+    ZapOther = 27,
+
+    ErrorLog = 28,
+    SpaHistory = 29,
+    SpaHistoryOffsets = 30,
+    PoolProperties = 31,
+    DSLPermissions = 32,
+    AccessControlList = 33,
+    SystemAccessControlList = 34,
+    FUidTable = 35,
+    FUidSize = 36,
+    NextClones = 37,
+    ScanQueue = 38,
+    UserGroupUsed = 39,
+    UserGroupQuota = 40,
+    UserRefs = 41,
+    DDTZap = 42,
+    DDTStats = 43,
+    SystemAttributes = 44,
+    SystemAttributesMasterNode = 45,
+    SystemAttributesRegistrations = 46,
+    SystemAttributesLayouts = 47,
+    ScanXLate = 48,
+    Dedup = 49,
+    DeadList = 50,
+    DeadListHeader = 51,
+    DSLClones = 52,
+    BlockPointerObjectSubObject = 53,
 }
 
 impl ObjType {
     pub fn from_value(value: usize) -> Option<Self> {
         Some(match value {
-            0  => Self::None,
-            1  => Self::ObjectDirectory, 
-            2  => Self::ObjectArray,
-            3  => Self::PackedNVList,
-            4  => Self::PackedNVListSize,
-            5  => Self::BlockPointerList,
-            6  => Self::BlockPointerListHeader,
-            7  => Self::SpaceMapHeader,
-            8  => Self::SpaceMap,
-            9  => Self::IntentLog,
+            0 => Self::None,
+            1 => Self::ObjectDirectory,
+            2 => Self::ObjectArray,
+            3 => Self::PackedNVList,
+            4 => Self::PackedNVListSize,
+            5 => Self::BlockPointerList,
+            6 => Self::BlockPointerListHeader,
+            7 => Self::SpaceMapHeader,
+            8 => Self::SpaceMap,
+            9 => Self::IntentLog,
             10 => Self::DNode,
             11 => Self::ObjSet,
-            12 => Self::DSLDataset,
-            13 => Self::DSLDatasetChildMap,
-            14 => Self::ObjSetSnapshotMap,
+            12 => Self::DSLDirectory,
+            13 => Self::DSLDirectoryChildMap,
+            14 => Self::DSLDataSetSnapshotMap,
             15 => Self::DSLProperties,
-            16 => Self::DSLObjSet,
+            16 => Self::DSLDataset,
             17 => Self::ZNode,
-            18 => Self::AcessControlList,
+            18 => Self::OldAccessControlList,
             19 => Self::PlainFileContents,
             20 => Self::DirectoryContents,
             21 => Self::MasterNode,
             22 => Self::DeleteQueue,
             23 => Self::ZVol,
             24 => Self::ZVolProperties,
+        
+            25 => Self::PlainOther,
+            26 => Self::U64Other,
+            27 => Self::ZapOther,
+        
+            28 => Self::ErrorLog,
+            29 => Self::SpaHistory,
+            30 => Self::SpaHistoryOffsets,
+            31 => Self::PoolProperties,
+            32 => Self::DSLPermissions,
+            33 => Self::AccessControlList,
+            34 => Self::SystemAccessControlList,
+            35 => Self::FUidTable,
+            36 => Self::FUidSize,
+            37 => Self::NextClones,
+            38 => Self::ScanQueue,
+            39 => Self::UserGroupUsed,
+            40 => Self::UserGroupQuota,
+            41 => Self::UserRefs,
+            42 => Self::DDTZap,
+            43 => Self::DDTStats,
+            44 => Self::SystemAttributes,
+            45 => Self::SystemAttributesMasterNode,
+            46 => Self::SystemAttributesRegistrations,
+            47 => Self::SystemAttributesLayouts,
+            48 => Self::ScanXLate,
+            49 => Self::Dedup,
+            50 => Self::DeadList,
+            51 => Self::DeadListHeader,
+            52 => Self::DSLClones,
+            53 => Self::BlockPointerObjectSubObject,
             _ => return None
         })
     }
@@ -316,18 +378,12 @@ impl DNodeBase {
         assert!(result.len() == size);
         Ok(result)
     }
-}
 
-
-
-#[derive(Debug)]
-pub struct DNodeObjectDirectory (pub DNodeBase);
-
-impl DNodeObjectDirectory {
-    pub fn get_zap_header(&mut self, vdevs: &mut Vdevs) -> Option<zap::ZapHeader> {
-        zap::ZapHeader::from_bytes_le(&mut self.0.read_block(0, vdevs).ok()?.iter().copied(), self.0.parse_data_block_size())
+    pub fn get_bonus_data(&self) -> &[u8] {
+        &self.bonus_data
     }
 }
+
 
 
 pub struct DNodeDSLDirectory (pub DNodeBase);
@@ -372,91 +428,67 @@ impl DNodeDSLDataset {
     }
 }
 
-
 #[derive(Debug)]
-pub struct DNodeMasterNode (pub DNodeBase);
-
-impl DNodeMasterNode {
+pub struct ZapDNode (pub DNodeBase);
+impl ZapDNode {
     pub fn get_zap_header(&mut self, vdevs: &mut Vdevs) -> Option<zap::ZapHeader> {
         zap::ZapHeader::from_bytes_le(&mut self.0.read_block(0, vdevs).ok()?.iter().copied(), self.0.parse_data_block_size())
+    }
+
+    pub fn dump_zap_contents(&mut self, vdevs: &mut Vdevs) -> Option<HashMap<String, zap::Value>> {
+        let header = self.get_zap_header(vdevs)?;
+        header.dump_contents(&mut self.0, vdevs)
     }
 }
 
 
 #[derive(Debug)]
-pub struct DNodeDirectoryContents(pub DNodeBase);
+pub struct DNodeDirectoryContents(pub DNodeBase, pub BonusType);
 
 impl DNodeDirectoryContents {
     pub fn get_zap_header(&mut self, vdevs: &mut Vdevs) -> Option<zap::ZapHeader> {
         zap::ZapHeader::from_bytes_le(&mut self.0.read_block(0, vdevs).ok()?.iter().copied(), self.0.parse_data_block_size())
-    }   
+    }
+
+    pub fn dump_zap_contents(&mut self, vdevs: &mut Vdevs) -> Option<HashMap<String, zap::Value>> {
+        let header = self.get_zap_header(vdevs)?;
+        header.dump_contents(&mut self.0, vdevs)
+    }
 }
 
 
 #[derive(Debug)]
-pub struct DNodePlainFileContents(pub DNodeBase);
+pub struct DNodePlainFileContents(pub DNodeBase, pub BonusType);
 
 
 #[derive(Debug)]
 pub enum DNode {
-    ObjectDirectory(DNodeObjectDirectory),
+    ObjectDirectory(ZapDNode),
     DSLDirectory(DNodeDSLDirectory),
     DSLDataset(DNodeDSLDataset),
-    MasterNode(DNodeMasterNode),
+    MasterNode(ZapDNode),
     DirectoryContents(DNodeDirectoryContents),
-    PlainFileContents(DNodePlainFileContents)
+    PlainFileContents(DNodePlainFileContents),
+    SystemAttributesMasterNode(ZapDNode),
+    SystemAttributesLayouts(ZapDNode),
+    SystemAttributesRegistrations(ZapDNode),
 }
 
 impl DNode {
     pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<DNode>
     where Iter: Iterator<Item = u8> + Clone {
         let (dnode_base, dnode_type, bonus_data_type) = DNodeBase::from_bytes_le(data)?;
-        Some(match dnode_type {
-            ObjType::None => todo!(),
-            ObjType::ObjectDirectory => DNode::ObjectDirectory(DNodeObjectDirectory(dnode_base)),
-            ObjType::ObjectArray => todo!(),
-            ObjType::PackedNVList => todo!(),
-            ObjType::PackedNVListSize => todo!(),
-            ObjType::BlockPointerList => todo!(),
-            ObjType::BlockPointerListHeader => todo!(),
-            ObjType::SpaceMapHeader => todo!(),
-            ObjType::SpaceMap => todo!(),
-            ObjType::IntentLog => todo!(),
-            ObjType::DNode => todo!(),
-            ObjType::ObjSet => todo!(),
-            ObjType::DSLDataset => {
-                match bonus_data_type {
-                    BonusType::None => todo!(),
-                    BonusType::PackedNVListSize => todo!(),
-                    BonusType::SpaceMapHeader => todo!(),
-                    BonusType::DSLDirectory => DNode::DSLDirectory(DNodeDSLDirectory(dnode_base)),
-                    BonusType::DSLDataset => todo!(),
-                    BonusType::ZNode => todo!(),
-                    BonusType::SystemAttributes => todo!(),
-                }
-            },
-            ObjType::DSLDatasetChildMap => todo!(),
-            ObjType::ObjSetSnapshotMap => todo!(),
-            ObjType::DSLProperties => todo!(),
-            ObjType::DSLObjSet => {
-                match bonus_data_type {
-                    BonusType::None => todo!(),
-                    BonusType::PackedNVListSize => todo!(),
-                    BonusType::SpaceMapHeader => todo!(),
-                    BonusType::DSLDirectory => todo!(),
-                    BonusType::DSLDataset => DNode::DSLDataset(DNodeDSLDataset(dnode_base)),
-                    BonusType::ZNode => todo!(),
-                    BonusType::SystemAttributes => todo!(),
-                }
-            },
-            ObjType::ZNode => todo!(),
-            ObjType::AcessControlList => todo!(),
-            ObjType::PlainFileContents => DNode::PlainFileContents(DNodePlainFileContents(dnode_base)),
-            ObjType::DirectoryContents => DNode::DirectoryContents(DNodeDirectoryContents(dnode_base)),
-            ObjType::MasterNode => DNode::MasterNode(DNodeMasterNode(dnode_base)),
-            ObjType::DeleteQueue => todo!(),
-            ObjType::ZVol => todo!(),
-            ObjType::ZVolProperties => todo!(),
+        Some(match (dnode_type, bonus_data_type) {
+            (ObjType::ObjectDirectory, BonusType::None) => DNode::ObjectDirectory(ZapDNode(dnode_base)),
+            (ObjType::DSLDirectory, BonusType::DSLDirectory) => DNode::DSLDirectory(DNodeDSLDirectory(dnode_base)),
+            (ObjType::DSLDataset, BonusType::DSLDataset) => DNode::DSLDataset(DNodeDSLDataset(dnode_base)),
+            (ObjType::PlainFileContents, bonus_type) => DNode::PlainFileContents(DNodePlainFileContents(dnode_base, bonus_type)),
+            (ObjType::DirectoryContents, bonus_type) => DNode::DirectoryContents(DNodeDirectoryContents(dnode_base, bonus_type)),
+            (ObjType::MasterNode, BonusType::None) => DNode::MasterNode(ZapDNode(dnode_base)),
+            (ObjType::SystemAttributesMasterNode, BonusType::None) => DNode::SystemAttributesMasterNode(ZapDNode(dnode_base)),
+            (ObjType::SystemAttributesLayouts, BonusType::None) => DNode::SystemAttributesLayouts(ZapDNode(dnode_base)),
+            (ObjType::SystemAttributesRegistrations, BonusType::None) => DNode::SystemAttributesRegistrations(ZapDNode(dnode_base)),
+            (obj_type, bonus_type) => todo!("Implement dnode type {obj_type:?} with bonus buffer type {bonus_type:?}!"),
         })
     }
 }

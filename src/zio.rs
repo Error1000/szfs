@@ -276,8 +276,8 @@ impl NormalBlockPointer {
                 _ => todo!("Implement {:?} compression!", self.compression_method),
             };
             assert!(data.len() == self.parse_logical_size() as usize);
-            use crate::ansi_color::*;
-            println!("{CYAN}Info{WHITE}: Using dva: {:?}", dva);
+            // use crate::ansi_color::*;
+            // println!("{CYAN}Info{WHITE}: Using dva: {:?}", dva);
             return Ok(data);
         }
 
