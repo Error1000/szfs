@@ -183,7 +183,7 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
         let (name, bytes_read) = read_string_and_size(data)?;
 
         let Some(value_type) = ValueType::from_value(data.read_u32_be()?) else {
-            println!("Unknown nvlist value type with name: \"{}\", skipping entry, which was {} bytes in size!", name, decode_size);
+            println!("Unknown nvlist value type with name: \"{}\", ignoring entry, which was {} bytes in size!", name, decode_size);
             let value_size = decode_size-(
                 bytes_read as u32
                 +4 /*size of decode_size*/

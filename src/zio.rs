@@ -43,7 +43,42 @@ impl DataVirtualAddress {
    pub fn dereference(&self, vdevs: &mut HashMap<usize, &mut dyn Vdev>, size: usize) -> Result<Vec<u8>, ()> {
         if self.is_gang { todo!("Implement GANG blocks!"); }
         let Some(vdev) = vdevs.get_mut(&self.vdev_id.try_into().expect("overflow should be impossible")) else { return Err(()); };
-        vdev.read(self.parse_offset()+4*1024*1024, size) 
+        if let Some(raidz_info) = vdev.get_raidz_info() {
+            assert!(raidz_info.nparity == 1);
+            let size_in_sectors = if size % vdev.get_asize() == 0 { size/vdev.get_asize() } else { (size/vdev.get_asize())+1};
+            let number_of_parity_sectors = if size_in_sectors%(raidz_info.ndevices-raidz_info.nparity) == 0 { size_in_sectors/(raidz_info.ndevices-raidz_info.nparity) } else { size_in_sectors/(raidz_info.ndevices-raidz_info.nparity)+1 };
+
+            let size_with_parity = (size_in_sectors+number_of_parity_sectors)*vdev.get_asize();
+            let res = vdev.read(self.parse_offset(), size_with_parity)?;
+            
+            // Source: https://github.com/openzfs/zfs/blob/master/lib/libzfs/libzfs_dataset.c#L5357
+            
+            // TODO: Don't just skip the parity sectors
+            let mut res_without_parity = Vec::<&[u8]>::new();
+            for sector in res
+            .chunks(vdev.get_asize())
+            .enumerate()
+            .filter(|(index, _)| index % raidz_info.ndevices != 0 /* skips the parity sectors */)
+            .map(|(_, value)| value) {
+                res_without_parity.push(sector);
+            }
+
+            let mut res_transposed = Vec::<u8>::new();
+            for row_number in 0..(raidz_info.ndevices-raidz_info.nparity) {
+                for data in res_without_parity.iter().skip(row_number).step_by(raidz_info.ndevices-raidz_info.nparity) {
+                    res_transposed.extend(*data);
+                }
+            } 
+
+            if size > res_transposed.len(){
+                res_transposed.resize(size, 0);
+            }
+
+            assert!(res_transposed.len() == size);
+            Ok(res_transposed)
+        } else {
+            vdev.read(self.parse_offset(), size) 
+        }
    }
 }
 

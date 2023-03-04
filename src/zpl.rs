@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use crate::{byte_iter::ByteIter, dmu::{ObjSet, DNode}, zio::Vdevs, zap, zpl};
 use std::fmt::Debug;
 
+// https://github.com/openzfs/zfs/blob/master/module/zfs/sa.c#L49
+
 #[derive(Debug)]
 pub struct SystemAttributesRegistration {
     attribute_id: u16,
@@ -178,12 +180,12 @@ impl SystemAttributes {
         for attribute_id in layout {
             let attribute_info = &self.attributes[attribute_id];
             match attribute_info.name.as_str() {
-                // For u64
+                // All of these are u64 array or single u64 system attributes with known sizes
                 "ZPL_ATIME" | "ZPL_MTIME" | "ZPL_CTIME" | "ZPL_CRTIME" | 
                 "ZPL_GEN" | "ZPL_MODE" | "ZPL_SIZE" | "ZPL_PARENT" | "ZPL_LINKS" |
                 "ZPL_XATTR" | "ZPL_RDEV" | "ZPL_FLAGS" | "ZPL_UID" | "ZPL_GID" |
                 "ZPL_PAD" | "ZPL_DACL_COUNT" | "ZPL_PROJID" => {
-                    if attribute_info.len == 0 { panic!("Attribute \"{}\" does not have a variable size according to the zfs source code (the scond column contains the size of the attribute in bytes, it's 0 for variable size): (https://github.com/openzfs/zfs/blob/master/module/zfs/zfs_sa.c#L34), but was read from disk as having a variable size!", attribute_info.name); }
+                    if attribute_info.len == 0 { panic!("System Attribute \"{}\" does not have a variable size according to the zfs source code (the scond column contains the size of the attribute in bytes, it's 0 for variable size): (https://github.com/openzfs/zfs/blob/master/module/zfs/zfs_sa.c#L34), but was read from disk as having a variable size!", attribute_info.name); }
                     if attribute_info.byteswap_function != 0 { println!("{YELLOW}Warning{WHITE}: Unsupported byte swap function on attribute \"{}\", ignoring!", attribute_info.name); continue; }
                     let nvalues = attribute_info.len/8;
                     if nvalues == 1 {
@@ -197,7 +199,12 @@ impl SystemAttributes {
                         attributes.insert(attribute_info.name.clone(), Value::U64Array(attribute_values));
                     }        
                 },
-                _ => println!("{YELLOW}Warning{WHITE}: Unsupported system attribute \"{}\", ignoring!", attribute_info.name),
+                
+                _ => {
+                    println!("{YELLOW}Warning{WHITE}: Unsupported system attribute \"{}\", ignoring!", attribute_info.name);
+                    if attribute_info.len == 0 {panic!("Unsupported system attribute \"{}\" has variable size, can't ignore it if we don't know how much to ignore!", attribute_info.name);}
+                    data.skip_n_bytes(attribute_info.len as usize)?;
+                },
             }
         }
 

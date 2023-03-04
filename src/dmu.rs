@@ -355,28 +355,32 @@ impl DNodeBase {
     }
     
     // Note: Reading 0 bytes will *always* succeed
-    pub fn read(&mut self, offset: usize, size: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
+    pub fn read(&mut self, offset: u64, size: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
         if size == 0 { return Ok(Vec::new()); }
         let mut result: Vec<u8> = Vec::new();
-        let first_data_block_id = offset/self.parse_data_block_size();
-        let first_data_block_offset = offset%self.parse_data_block_size();
-        let first_data_block = self.read_block(first_data_block_id, vdevs)?;
-        result.extend(first_data_block.iter().skip(first_data_block_offset));
-
+        let first_data_block_index = offset/(self.parse_data_block_size() as u64);
+        let first_data_block_offset = offset%(self.parse_data_block_size() as u64);
+        let first_data_block = self.read_block(first_data_block_index as usize, vdevs)?;
+        result.extend(first_data_block.iter().skip(first_data_block_offset as usize));
+    
         if result.len() >= size {
             result.resize(size, 0);
             return Ok(result);
         }
-
+    
         let size_remaining = size-result.len();
         let blocks_to_read = if size_remaining%self.parse_data_block_size() == 0 { size_remaining/self.parse_data_block_size() } else { (size_remaining/self.parse_data_block_size())+1 };
-        for i in 1..=blocks_to_read {
-            result.extend(self.read_block(first_data_block_id+i, vdevs)?);
+        for block_index in 1..=blocks_to_read {
+            result.extend(self.read_block((first_data_block_index+block_index as u64) as usize, vdevs)?);
         }
-
-        result.resize(size, 0);
+    
+        if result.len() >= size {
+            result.resize(size, 0);
+        }
+        
         assert!(result.len() == size);
         Ok(result)
+    
     }
 
     pub fn get_bonus_data(&self) -> &[u8] {
@@ -546,9 +550,9 @@ impl ObjSet {
     }
 
     pub fn get_dnode_at(&mut self, index: usize, vdevs: &mut Vdevs) -> Option<DNode> {
-        let mut data = self.metadnode.read(index*512, 512, vdevs).ok()?;
+        let mut data = self.metadnode.read((index*512) as u64, 512, vdevs).ok()?;
         let dnode_slots = DNodeBase::get_n_slots_from_bytes_le(data.iter().copied())?;
-        data.extend(self.metadnode.read((index+1)*512, (dnode_slots-1)*512, vdevs).ok()?.iter());
+        data.extend(self.metadnode.read(((index+1)*512) as u64, (dnode_slots-1)*512, vdevs).ok()?.iter());
         DNode::from_bytes_le(&mut data.iter().copied())
     }
 
