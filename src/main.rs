@@ -15,6 +15,7 @@ mod lz4;
 mod zap;
 mod dsl;
 mod zpl;
+mod lzjb;
 
 mod ansi_color {
     pub const RED: &str = "\u{001b}[31m";

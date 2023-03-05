@@ -1,5 +1,5 @@
 use std::{fmt::Debug, collections::HashMap};
-use crate::{byte_iter::ByteIter, Vdev, fletcher, lz4, dmu};
+use crate::{byte_iter::ByteIter, Vdev, fletcher, lz4, dmu, lzjb};
 
 
 struct DataVirtualAddress {
@@ -307,7 +307,10 @@ impl NormalBlockPointer {
                     let comp_size = u32::from_be_bytes(data[0..4].try_into().unwrap());
                     // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
                     lz4::lz4_decompress_blocks(&mut data[4..comp_size as usize+4].iter().copied()).map_err(|_| ())?
-                }
+                },
+                CompressionMethod::Lzjb => {
+                    lzjb::lzjb_decompress(&mut data.iter().copied(), self.parse_logical_size() as usize)?
+                },
                 _ => todo!("Implement {:?} compression!", self.compression_method),
             };
             assert!(data.len() == self.parse_logical_size() as usize);
@@ -425,7 +428,10 @@ impl EmbeddedBlockPointer {
                 let comp_size = u32::from_be_bytes(data[0..4].try_into().unwrap());
                 // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
                 lz4::lz4_decompress_blocks(&mut data[4..comp_size as usize+4].iter().copied()).map_err(|_| ())?
-            }
+            },
+            CompressionMethod::Lzjb => {
+                lzjb::lzjb_decompress(&mut data.iter().copied(), self.parse_logical_size() as usize)?
+            },
             _ => todo!("Implement {:?} compression!", self.compression_method),
         };
 
