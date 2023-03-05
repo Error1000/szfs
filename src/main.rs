@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::{fs::File, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap};
+use std::{fs::{File, OpenOptions}, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap};
 
 use byte_iter::ByteIter;
 
@@ -355,19 +355,19 @@ impl Uberblock {
 // 7. Don't hardcode vdev layout and implement ability to try other labels instead of just using the first one
 // 8. Don't just skip the parity sectors in RAIDZ
 // 9. Properly support sector sizes bigger than 512 bytes
-// 10. Implement lzjb
-// 11. Test RAIDZ writing
+// 10. Test RAIDZ writing, and in general implement writing
+// 11. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
 
 fn main() {
     use crate::ansi_color::*;
 
-    let Ok(vdev0) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev0.bin")
+    let Ok(vdev0) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/disk1.bin")
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev!");
         return;
     };
     let mut vdev0: VdevFile = vdev0.into();
-
+/*
     let Ok(vdev1) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev1.bin")
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev!");
@@ -387,7 +387,7 @@ fn main() {
         println!("{RED}Fatal{WHITE}: Failed to open vdev!");
         return;
     };
-    let mut vdev3: VdevFile = vdev3.into();
+    let mut vdev3: VdevFile = vdev3.into();*/
 
     // For now just use the first label
     let mut label0 = VdevLabel::from_bytes(&vdev0.read_raw_label(0).expect("Vdev label 0 must be parsable!"));
@@ -407,6 +407,7 @@ fn main() {
 
     println!("{CYAN}Info{WHITE}: Parsed nv_list, {:?}!", name_value_pairs);
 
+/*
     let mut devices: HashMap<usize, &mut dyn Vdev> = HashMap::new();
     devices.insert(0, &mut vdev0);
     devices.insert(1, &mut vdev1);
@@ -414,7 +415,7 @@ fn main() {
     devices.insert(3, &mut vdev3);
 
     let mut vdev_raidz: VdevRaidz = VdevRaidz::from_vdevs(devices, 1, 2_usize.pow(top_level_ashift as u32));
-
+*/
     label0.set_raw_uberblock_size(2_usize.pow(top_level_ashift as u32));
 
     let mut uberblocks = Vec::<Uberblock>::new();
@@ -430,7 +431,7 @@ fn main() {
 
         
     let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
-    vdevs.insert(0usize, &mut vdev_raidz);
+    vdevs.insert(0usize, &mut vdev0);
 
     let mut uberblock_search_info = None;
     for ub in uberblocks.iter_mut().rev() {
@@ -482,8 +483,7 @@ fn main() {
         panic!("SA_ATTRS entry is not a number!");
     };
 
-    let system_attributes = SystemAttributes::from_attributes_node_number(system_attributes_info_number as usize, &mut head_dataset_object_set, &mut vdevs).unwrap();
-    println!("{CYAN}Info{WHITE}: {:?}", system_attributes);
+    let mut system_attributes = SystemAttributes::from_attributes_node_number(system_attributes_info_number as usize, &mut head_dataset_object_set, &mut vdevs).unwrap();
 
     let zap::Value::U64(root_number) = master_node_zap_data["ROOT"] else {
         panic!("ROOT zap entry is not a number!");
@@ -495,14 +495,14 @@ fn main() {
 
     let root_node_zap_data = root_node.dump_zap_contents(&mut vdevs).unwrap();
     println!("Root directory: {:?}", root_node_zap_data);
-/*
-    let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.txt"] else {
+
+    let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.mkv"] else {
         panic!("File entry is not a number!");
     };
 
     // Only bottom 48 bits are the actual object id
     // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zfs_znode.h#L152
-    file_node_number &= (1 << 48) -1;
+    file_node_number &= (1 << 48) - 1;
 
     let DNode::PlainFileContents(mut file_node) = head_dataset_object_set.get_dnode_at(file_node_number as usize, &mut vdevs).unwrap() else {
         panic!("DNode {} which is the file node is not a plain file contents node!", file_node_number);
@@ -512,7 +512,8 @@ fn main() {
     let zpl::Value::U64(file_len) = file_info["ZPL_SIZE"] else {
         panic!("File length is not a number!");
     };
-
-    println!("{:?}", file_node.0.read(0, file_len as usize, &mut vdevs));
-    */
+    OpenOptions::new().create(true).write(true).open("test.mkv")
+    .unwrap()
+    .write_all(&file_node.0.read(0, file_len as usize, &mut vdevs).unwrap())
+    .unwrap();    
 }

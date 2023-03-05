@@ -300,8 +300,7 @@ impl DNodeBase {
         2usize.pow(u32::from(self.indirect_blocksize_log2))
     }
 
-    fn next_level_id_and_offset(&self, current_level_id: usize) -> IndirectBlockTag {
-        let blocks_per_indirect_block = self.parse_indirect_block_size()/BlockPointer::get_ondisk_size();
+    fn next_level_id_and_offset(&self, current_level_id: usize, blocks_per_indirect_block: usize) -> IndirectBlockTag {
         IndirectBlockTag {
             id: current_level_id/blocks_per_indirect_block, 
             offset: current_level_id%blocks_per_indirect_block
@@ -315,41 +314,41 @@ impl DNodeBase {
     pub fn read_block(&mut self, block_id: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
         if block_id > self.max_indirect_block_id.try_into().unwrap() { return Err(()); }
         assert!(self.n_indirect_levels >= 1);
-
-        if self.n_indirect_levels == 1 { // There is no indirection
-            let block_data = self.block_pointers[block_id].dereference(vdevs)?;
-            assert!(block_data.len() == self.parse_data_block_size());    
-            return Ok(block_data);
-        }
-
-        // If we got here then n_indirect_levels must be 2 or greater
+        let blocks_per_indirect_block = self.parse_indirect_block_size()/BlockPointer::get_ondisk_size();
 
         let mut levels: Vec<IndirectBlockTag> = Vec::new();
-        levels.push(self.next_level_id_and_offset(block_id));
-        for _ in 1..self.n_indirect_levels-1 {
-            levels.push(self.next_level_id_and_offset( levels.last().unwrap().id));
-        }
+        for level in 0..self.n_indirect_levels {
+            let actual_id = if level == 0 {
+                block_id
+            } else {
+                levels.last().unwrap().id
+            };
 
+            let actual_block_per_indirect_block = if level == self.n_indirect_levels-1 {
+                self.block_pointers.len()
+            } else {
+                blocks_per_indirect_block
+            };
+            
+            levels.push(self.next_level_id_and_offset(actual_id, actual_block_per_indirect_block));
+        }
         // Travel back down the levels
         let top_level = levels.pop().unwrap();
-        let mut indirect_block_data = self.block_pointers[top_level.id].dereference(vdevs)?;
-        let mut next_block_pointer = {
-            let mut iter = indirect_block_data.iter().copied();
-            iter.skip_n_bytes(BlockPointer::get_ondisk_size()*top_level.offset);
-            BlockPointer::from_bytes_le(&mut iter).ok_or(())?
-        };
-
-        for _ in 1..self.n_indirect_levels-1 {
-            indirect_block_data = next_block_pointer.dereference(vdevs)?;
+        let mut indirect_block_data;
+        let mut next_block_pointer_ref = &mut self.block_pointers[top_level.offset];
+        let mut next_block_pointer;
+        for _ in 0..self.n_indirect_levels-1 {
+            indirect_block_data = next_block_pointer_ref.dereference(vdevs)?;
             let cur_level = levels.pop().unwrap();
             next_block_pointer = {
                 let mut iter = indirect_block_data.iter().copied();
                 iter.skip_n_bytes(BlockPointer::get_ondisk_size()*cur_level.offset);
                 BlockPointer::from_bytes_le(&mut iter).ok_or(())?
             };
+            next_block_pointer_ref = &mut next_block_pointer;
         }
 
-        let block_data = next_block_pointer.dereference(vdevs)?;
+        let block_data = next_block_pointer_ref.dereference(vdevs)?;
         assert!(block_data.len() == self.parse_data_block_size());
         Ok(block_data)
     }

@@ -5,12 +5,22 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug",
-            "type": "gdb",
+            "type": "lldb",
             "request": "launch",
-            "target": "./target/debug/szfs",
-            "cwd": "${workspaceRoot}",
-            "valuesFormatting": "parseText"
+            "name": "Debug executable 'szfs'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=szfs",
+                    "--package=szfs"
+                ],
+                "filter": {
+                    "name": "szfs",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
         }
     ]
 }

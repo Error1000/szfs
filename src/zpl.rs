@@ -177,7 +177,7 @@ impl SystemAttributes {
         let mut attributes: HashMap<String, Value> = HashMap::new();
 
         use crate::ansi_color::*;
-        for attribute_id in layout {
+        for (attribute_index, attribute_id) in layout.iter().enumerate() {
             let attribute_info = &self.attributes[attribute_id];
             match attribute_info.name.as_str() {
                 // All of these are u64 array or single u64 system attributes with known sizes
@@ -202,7 +202,8 @@ impl SystemAttributes {
                 
                 _ => {
                     println!("{YELLOW}Warning{WHITE}: Unsupported system attribute \"{}\", ignoring!", attribute_info.name);
-                    if attribute_info.len == 0 {panic!("Unsupported system attribute \"{}\" has variable size, can't ignore it if we don't know how much to ignore!", attribute_info.name);}
+                    // NOTE: If it's the last attribute, even if we don't know how much to skip, it doesn't matter
+                    if attribute_info.len == 0 && attribute_index != layout.len()-1 {panic!("Unsupported system attribute \"{}\" has variable size, can't ignore it if we don't know how much to ignore!", attribute_info.name);}
                     data.skip_n_bytes(attribute_info.len as usize)?;
                 },
             }

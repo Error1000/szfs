@@ -476,7 +476,7 @@ impl ZapHeader {
                     let entry = MicroZapEntry::from_bytes_le(&mut data)?;
                     // Ignore empty/broken entries
                     // NOTE: Empty entries (entries that are all zeroes) are normal, as far as i can tell
-                    // TODO: Should we bail out on broken entries, which is what we do for fat zaps
+                    // TODO: Should we bail out on broken entries, which is what we do for fat zaps?
                     let _ = entry.dump_contents_into(&mut result);
                 }
             },

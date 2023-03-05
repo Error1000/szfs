@@ -24,7 +24,7 @@ impl DataVirtualAddress {
     Some(DataVirtualAddress { 
         vdev_id, 
         data_allocated_size_minus_one_in_sectors: (grid_and_asize&0xFF_FF_FF_00) >> 8, // ignore GRID as it is reserved 
-        offset_in_sectors: offset_and_gang_bit&(!(1<<63)), // bit 64 is the gang bit 
+        offset_in_sectors: offset_and_gang_bit&((1<<63)-1), // bit 64 is the gang bit 
         is_gang: offset_and_gang_bit&(1<<63) != 0
     })
    }
@@ -42,7 +42,8 @@ impl DataVirtualAddress {
 
    pub fn dereference(&self, vdevs: &mut HashMap<usize, &mut dyn Vdev>, size: usize) -> Result<Vec<u8>, ()> {
         if self.is_gang { todo!("Implement GANG blocks!"); }
-        let Some(vdev) = vdevs.get_mut(&self.vdev_id.try_into().expect("overflow should be impossible")) else { return Err(()); };
+        // TODO: Figure out why plain file contents dvas at the end of the indirect block tree have vdev id 1
+        let Some(vdev) = vdevs.get_mut(&0) else { return Err(()); };
         if let Some(raidz_info) = vdev.get_raidz_info() {
             assert!(raidz_info.nparity == 1);
             let size_in_sectors = if size % vdev.get_asize() == 0 { size/vdev.get_asize() } else { (size/vdev.get_asize())+1};
@@ -287,7 +288,11 @@ impl NormalBlockPointer {
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data pointed to by the gang blocks once stitched together, and it is done before decompression
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
         for dva in &self.dvas {
-            let Ok(data) = dva.dereference(vdevs, self.parse_physical_size().try_into().unwrap()) else { continue; };
+            let Ok(data) = dva.dereference(vdevs, self.parse_physical_size().try_into().unwrap()) else { 
+                use crate::ansi_color::*;
+                println!("{YELLOW}Warning{WHITE}: Invalid dva {:?}", dva);
+                continue; 
+            };
 
             let computed_checksum = match self.checksum_method {
                 ChecksumMethod::Fletcher4 | ChecksumMethod::On => fletcher::do_fletcher4(&data),
@@ -318,7 +323,6 @@ impl NormalBlockPointer {
             // println!("{CYAN}Info{WHITE}: Using dva: {:?}", dva);
             return Ok(data);
         }
-
         return Err(());
     }
 }

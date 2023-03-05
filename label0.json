@@ -1,59 +1,28 @@
 {
-    "version": 5000,
-    "vdev_tree": {
-        "is_log": 0,
-        "type": "raidz",
-        "guid": 4211938202395909330,
-        "nparity": 1,
-        "ashift": 9,
-        "children": [
-            {
-                "DTL": 60,
-                "guid": 16277283234386925440,
-                "id": 0,
-                "path": "/var/tmp/pool/vdev0",
-                "type": "file",
-                "create_txg": 4
-            },
-            {
-                "guid": 1093521023665450471,
-                "path": "/var/tmp/pool/vdev1",
-                "type": "file",
-                "DTL": 59,
-                "id": 1,
-                "create_txg": 4
-            },
-            {
-                "DTL": 58,
-                "id": 2,
-                "guid": 4583794714118133562,
-                "type": "file",
-                "path": "/var/tmp/pool/vdev2",
-                "create_txg": 4
-            },
-            {
-                "id": 3,
-                "type": "file",
-                "path": "/var/tmp/pool/vdev3",
-                "guid": 10087147907606635825,
-                "create_txg": 4,
-                "DTL": 57
-            }
-        ],
-        "asize": 1054867456,
-        "metaslab_array": 33,
-        "metaslab_shift": 23,
-        "id": 0,
-        "create_txg": 4
-    },
-    "name": "zol-0.6.2",
-    "hostid": 2831182970,
-    "guid": 16277283234386925440,
     "vdev_children": 1,
-    "pool_guid": 6909373545352391999,
+    "txg": 19083,
+    "errata": 0,
+    "name": "basic",
+    "guid": 10608472175031871538,
     "state": 1,
-    "hostname": "centos-6-3-amd64",
-    "txg": 172,
-    "top_guid": 4211938202395909330,
-    "features_for_read": {}
+    "vdev_tree": {
+        "create_txg": 4,
+        "metaslab_shift": 26,
+        "ashift": 9,
+        "metaslab_array": 131,
+        "path": "/home/dan/Documents/Coding/Rust/szfs/test/disk1.bin",
+        "type": "file",
+        "is_log": 0,
+        "guid": 10608472175031871538,
+        "id": 0,
+        "asize": 1069023232
+    },
+    "version": 5000,
+    "features_for_read": {
+        "com.delphix:hole_birth": null,
+        "com.delphix:embedded_data": null
+    },
+    "pool_guid": 8547252841327129340,
+    "hostname": "predator",
+    "top_guid": 10608472175031871538
 }
