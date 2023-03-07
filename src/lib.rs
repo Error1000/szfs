@@ -1,28 +1,40 @@
 #![allow(dead_code)]
-use std::{fs::{File, OpenOptions}, io::{Read, Write, Seek, SeekFrom}, os::unix::prelude::MetadataExt, collections::HashMap};
+use std::{fs::File, io::{SeekFrom, Seek, Read, Write}, collections::HashMap};
 
 use byte_iter::ByteIter;
 
-use crate::{dmu::DNode, zpl::SystemAttributes};
+pub mod nvlist;
+pub mod byte_iter;
+pub mod zio;
+pub mod zil;
+pub mod dmu;
+pub mod fletcher;
+pub mod lz4;
+pub mod zap;
+pub mod dsl;
+pub mod zpl;
+pub mod lzjb;
 
-mod nvlist;
-mod byte_iter;
-mod zio;
-mod zil;
-mod dmu;
-mod fletcher;
-mod lz4;
-mod zap;
-mod dsl;
-mod zpl;
-mod lzjb;
-
-mod ansi_color {
+pub mod ansi_color {
     pub const RED: &str = "\u{001b}[31m";
     pub const YELLOW: &str = "\u{001b}[33m";
     pub const CYAN: &str = "\u{001b}[36m";
     pub const WHITE: &str = "\u{001b}[0m";
 }
+
+// TODO:
+// 1. Implement spill blocks
+// 2. Implement non-embedded fat zap tables
+// 3. Implement gang blocks
+// 4. Implement all nvlist values
+// 5. Implement all fat zap values
+// 6. Implement all system attributes
+// 7. Don't hardcode vdev layout and implement ability to try other labels instead of just using the first one
+// 8. Don't just skip the parity sectors in RAIDZ
+// 9. Properly support sector sizes bigger than 512 bytes
+// 10. Test RAIDZ writing, and in general implement writing
+// 11. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
+
 
 pub struct RaidzInfo {
     ndevices: usize,
@@ -45,7 +57,7 @@ pub trait Vdev {
 
 
 #[derive(Debug)]
-struct VdevFile {
+pub struct VdevFile {
     device: File,
 }
 
@@ -63,6 +75,7 @@ impl VdevFile {
         Ok(())
     }
 }
+
 impl Vdev for VdevFile {
     fn get_raidz_info(&self) -> Option<RaidzInfo> {
         None
@@ -85,7 +98,7 @@ impl Vdev for VdevFile {
     }
 
     fn get_size(&self) -> u64 {
-        self.device.metadata().expect("File must have size in metadata!").size()
+        self.device.metadata().unwrap().len()
     }
 
     // Source: http://www.giis.co.in/Zfs_ondiskformat.pdf
@@ -113,7 +126,7 @@ impl From<File> for VdevFile {
 }
 
 
-struct VdevRaidz<'a> {
+pub struct VdevRaidz<'a> {
     devices: HashMap<usize, &'a mut dyn Vdev>,
     size: u64,
     ndevices: usize,
@@ -261,7 +274,7 @@ impl Vdev for VdevRaidz<'_> {
 
 
 #[derive(Debug)]
-struct VdevLabel {
+pub struct VdevLabel {
     name_value_pairs_raw: Vec<u8>,
     uberblocks_raw: Vec<u8>,
     uberblock_size: Option<usize>,
@@ -296,16 +309,20 @@ impl VdevLabel {
     pub fn get_raw_uberblock_count(&self) -> usize {
         self.uberblocks_raw.len()/self.get_raw_uberblock_size()
     }
+
+    pub fn get_name_value_pairs_raw(&self) -> &[u8] {
+        &self.name_value_pairs_raw
+    }
 }
 
 
 #[derive(Debug)]
-struct Uberblock {
-    version: u64,
-    txg: u64,
-    guid_sum: u64,
-    timestamp: u64,
-    rootbp: zio::BlockPointer
+pub struct Uberblock {
+    pub version: u64,
+    pub txg: u64,
+    pub guid_sum: u64,
+    pub timestamp: u64,
+    pub rootbp: zio::BlockPointer
 }
 
 const UBERBLOCK_MAGIC: u64 = 0x00bab10c;
@@ -343,177 +360,5 @@ impl Uberblock {
             return None;
         }
    }
-}
 
-// TODO:
-// 1. Implement spill blocks
-// 2. Implement non-embedded fat zap tables
-// 3. Implement gang blocks
-// 4. Implement all nvlist values
-// 5. Implement all fat zap values
-// 6. Implement all system attributes
-// 7. Don't hardcode vdev layout and implement ability to try other labels instead of just using the first one
-// 8. Don't just skip the parity sectors in RAIDZ
-// 9. Properly support sector sizes bigger than 512 bytes
-// 10. Test RAIDZ writing, and in general implement writing
-// 11. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
-
-fn main() {
-    use crate::ansi_color::*;
-
-    let Ok(vdev0) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/disk1.bin")
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev!");
-        return;
-    };
-    let mut vdev0: VdevFile = vdev0.into();
-/*
-    let Ok(vdev1) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev1.bin")
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev!");
-        return;
-    };
-    let mut vdev1: VdevFile = vdev1.into();
-
-    let Ok(vdev2) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev2.bin")
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev!");
-        return;
-    };
-    let mut vdev2: VdevFile = vdev2.into();
-
-    let Ok(vdev3) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev3.bin")
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev!");
-        return;
-    };
-    let mut vdev3: VdevFile = vdev3.into();*/
-
-    // For now just use the first label
-    let mut label0 = VdevLabel::from_bytes(&vdev0.read_raw_label(0).expect("Vdev label 0 must be parsable!"));
-
-    let name_value_pairs = nvlist::from_bytes_xdr(&mut label0.name_value_pairs_raw.iter().copied()).expect("Name value pairs in the vdev label must be valid!");
-    let nvlist::Value::NVList(vdev_tree) = &name_value_pairs["vdev_tree"] else {
-        panic!("vdev_tree is not an nvlist!");
-    };
-
-    let nvlist::Value::U64(top_level_ashift) = vdev_tree["ashift"] else {
-        panic!("no ashift found for top level vdev!");
-    };
-
-    let nvlist::Value::U64(_label_txg) = name_value_pairs["txg"] else {
-        panic!("no txg found in label!");
-    };
-
-    println!("{CYAN}Info{WHITE}: Parsed nv_list, {:?}!", name_value_pairs);
-
-/*
-    let mut devices: HashMap<usize, &mut dyn Vdev> = HashMap::new();
-    devices.insert(0, &mut vdev0);
-    devices.insert(1, &mut vdev1);
-    devices.insert(2, &mut vdev2);
-    devices.insert(3, &mut vdev3);
-
-    let mut vdev_raidz: VdevRaidz = VdevRaidz::from_vdevs(devices, 1, 2_usize.pow(top_level_ashift as u32));
-*/
-    label0.set_raw_uberblock_size(2_usize.pow(top_level_ashift as u32));
-
-    let mut uberblocks = Vec::<Uberblock>::new();
-    for i in 0..label0.get_raw_uberblock_count() {
-        let raw_uberblock = label0.get_raw_uberblock(i);
-        if let Some(uberblock) = Uberblock::from_bytes(&mut raw_uberblock.iter().copied()) {
-            uberblocks.push(uberblock);
-        }
-    }
-    
-    println!("{CYAN}Info{WHITE}: Found {} uberblocks!", uberblocks.len());
-    uberblocks.sort_unstable_by(|a, b| a.txg.cmp(&b.txg));
-
-        
-    let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
-    vdevs.insert(0usize, &mut vdev0);
-
-    let mut uberblock_search_info = None;
-    for ub in uberblocks.iter_mut().rev() {
-        if let Ok(data) = ub.rootbp.dereference(&mut vdevs) {
-            uberblock_search_info = Some((ub, data));
-            break;
-        }
-    };
-
-    let (active_uberblock, mos_data) = uberblock_search_info.unwrap();
-    println!("{CYAN}Info{WHITE}: Using {:?}", active_uberblock);
-
-    let mut meta_object_set = dmu::ObjSet::from_bytes_le(&mut mos_data.iter().copied()).expect("Mos should be valid!");
-    
-    let DNode::ObjectDirectory(mut object_directory) = meta_object_set.get_dnode_at(1, &mut vdevs).expect("Object directory should be valid!")
-    else {panic!("DNode 1 is not an object directory!"); };
-    let objdir_zap_data = object_directory.dump_zap_contents(&mut vdevs).unwrap();
-    
-    println!("{CYAN}Info{WHITE}: Meta object set obj directory zap: {:?}", objdir_zap_data);
-
-    let zap::Value::U64(root_dataset_number) = objdir_zap_data["root_dataset"] else {
-        panic!("Couldn't read root_dataset id!");
-    };
-    
-    let DNode::DSLDirectory(root_dataset) = meta_object_set.get_dnode_at(root_dataset_number as usize, &mut vdevs).unwrap() else {
-        panic!("DNode {} which is the root_dataset is not a dsl directory!", root_dataset_number);
-    };
-
-    let head_dataset_number = root_dataset.parse_bonus_data().unwrap().get_head_dataset_object_number();
-    let DNode::DSLDataset(head_dataset) = meta_object_set.get_dnode_at(head_dataset_number as usize, &mut vdevs).unwrap() else {
-        panic!("DNode {} whichs is the head_dataset is not a dsl dataset!", head_dataset_number);
-    };
-    let mut head_dataset_bonus = head_dataset.parse_bonus_data().unwrap();
-    let head_dataset_blockpointer = head_dataset_bonus.get_block_pointer();
-
-    // Now we have access to the dataset we are interested in
-    let mut head_dataset_object_set = dmu::ObjSet::from_bytes_le(&mut head_dataset_blockpointer.dereference(&mut vdevs).unwrap().iter().copied()).unwrap();
-
-    let DNode::MasterNode(mut head_dataset_master_node) = head_dataset_object_set.get_dnode_at(1, &mut vdevs).unwrap() else {
-        panic!("DNode 1 which is the master_node is not a master node!");
-    };
-    
-    let master_node_zap_data = head_dataset_master_node.dump_zap_contents(&mut vdevs).unwrap();
-
-    println!("{CYAN}Info{WHITE}: Root dataset master node zap: {:?}", master_node_zap_data);
-
-
-    let zap::Value::U64(system_attributes_info_number) = master_node_zap_data["SA_ATTRS"] else {
-        panic!("SA_ATTRS entry is not a number!");
-    };
-
-    let mut system_attributes = SystemAttributes::from_attributes_node_number(system_attributes_info_number as usize, &mut head_dataset_object_set, &mut vdevs).unwrap();
-
-    let zap::Value::U64(root_number) = master_node_zap_data["ROOT"] else {
-        panic!("ROOT zap entry is not a number!");
-    };
-
-    let DNode::DirectoryContents(mut root_node) = head_dataset_object_set.get_dnode_at(root_number as usize, &mut vdevs).unwrap() else {
-        panic!("DNode {} which is the root dnode is not a directory contents node!", root_number);
-    };
-
-    let root_node_zap_data = root_node.dump_zap_contents(&mut vdevs).unwrap();
-    println!("Root directory: {:?}", root_node_zap_data);
-
-    let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.mkv"] else {
-        panic!("File entry is not a number!");
-    };
-
-    // Only bottom 48 bits are the actual object id
-    // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zfs_znode.h#L152
-    file_node_number &= (1 << 48) - 1;
-
-    let DNode::PlainFileContents(mut file_node) = head_dataset_object_set.get_dnode_at(file_node_number as usize, &mut vdevs).unwrap() else {
-        panic!("DNode {} which is the file node is not a plain file contents node!", file_node_number);
-    };
-
-    let file_info = system_attributes.parse_system_attributes_bytes_le(&mut file_node.0.get_bonus_data().iter().copied()).unwrap();
-    let zpl::Value::U64(file_len) = file_info["ZPL_SIZE"] else {
-        panic!("File length is not a number!");
-    };
-    OpenOptions::new().create(true).write(true).open("test.mkv")
-    .unwrap()
-    .write_all(&file_node.0.read(0, file_len as usize, &mut vdevs).unwrap())
-    .unwrap();    
 }
