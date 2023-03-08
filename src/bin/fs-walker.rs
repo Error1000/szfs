@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs::OpenOptions, io::Write};
 use szfs::*;
 
 fn main() {
@@ -6,28 +6,28 @@ fn main() {
 
     let Ok(vdev0) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev0.bin")
     else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev!");
+        println!("{RED}Fatal{WHITE}: Failed to open vdev0!");
         return;
     };
     let mut vdev0: VdevFile = vdev0.into();
 
     let Ok(vdev1) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev1.bin")
     else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev!");
+        println!("{RED}Fatal{WHITE}: Failed to open vdev1!");
         return;
     };
     let mut vdev1: VdevFile = vdev1.into();
 
     let Ok(vdev2) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev2.bin")
     else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev!");
+        println!("{RED}Fatal{WHITE}: Failed to open vdev2!");
         return;
     };
     let mut vdev2: VdevFile = vdev2.into();
 
     let Ok(vdev3) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev3.bin")
     else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev!");
+        println!("{RED}Fatal{WHITE}: Failed to open vdev3!");
         return;
     };
     let mut vdev3: VdevFile = vdev3.into();
@@ -147,7 +147,7 @@ fn main() {
     // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zfs_znode.h#L152
     file_node_number &= (1 << 48) - 1;
 
-    let DNode::PlainFileContents(mut file_node) = head_dataset_object_set.get_dnode_at(file_node_number as usize, &mut vdevs).unwrap() else {
+    let szfs::dmu::DNode::PlainFileContents(mut file_node) = head_dataset_object_set.get_dnode_at(file_node_number as usize, &mut vdevs).unwrap() else {
         panic!("DNode {} which is the file node is not a plain file contents node!", file_node_number);
     };
 

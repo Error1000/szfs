@@ -233,13 +233,19 @@ impl DNodeBase {
         data.skip_n_bytes(4*core::mem::size_of::<u64>())?; // Ignore 4 u64 paddings
 
         if flags & dnode_flag::HAS_SPILL_BLKPTR != 0 {
-            todo!("Implement spill blocks for dnodes!");
+            use crate::ansi_color::*;
+            if cfg!(feature = "debug") {
+                println!("{YELLOW}Warning{WHITE}: Tried to read a dnode with spill block, this is not supported!");
+            }
+            return None;
         }
 
         // Currently there must be at least one block pointer and at most 3
         if !(n_block_pointers >= 1 && n_block_pointers <= 3) {
             use crate::ansi_color::*;
-            println!("{YELLOW}Warning{WHITE}: Tried to parse a dnode with {} block pointers, sanity check failed!", n_block_pointers);
+            if cfg!(feature = "debug") {
+                println!("{YELLOW}Warning{WHITE}: Tried to parse a dnode with {} block pointers, sanity check failed!", n_block_pointers);
+            }
             return None;
         }
 
@@ -272,7 +278,13 @@ impl DNodeBase {
         let rounded_up_total_size = if total_size%512 == 0 { total_size } else { ((total_size/512)+1)*512 };
 
         // Sanity check that the size of the dnode calculated using the n_block_pointers and bonus_data_len is the same as the one calculated form the number of slots this dnode takes up
-        assert!(rounded_up_total_size == (usize::from(extra_slots)+1)*512); 
+        if rounded_up_total_size != (usize::from(extra_slots)+1)*512 {
+            use crate::ansi_color::*;
+            if cfg!(feature = "debug") {
+                println!("{YELLOW}Warning{WHITE}: Tried to parse an invalid dnode whose size doesn't make sense!");
+            }
+            return None;
+        }
 
         let tail_padding_size = rounded_up_total_size-total_size;
         data.skip_n_bytes(tail_padding_size)?;
@@ -380,6 +392,10 @@ impl DNodeBase {
         assert!(result.len() == size);
         Ok(result)
     
+    }
+
+    pub fn get_block_pointers(&mut self) -> &mut Vec<BlockPointer> {
+        &mut self.block_pointers
     }
 
     pub fn get_bonus_data(&self) -> &[u8] {
@@ -491,8 +507,28 @@ impl DNode {
             (ObjType::SystemAttributesMasterNode, BonusType::None) => DNode::SystemAttributesMasterNode(ZapDNode(dnode_base)),
             (ObjType::SystemAttributesLayouts, BonusType::None) => DNode::SystemAttributesLayouts(ZapDNode(dnode_base)),
             (ObjType::SystemAttributesRegistrations, BonusType::None) => DNode::SystemAttributesRegistrations(ZapDNode(dnode_base)),
-            (obj_type, bonus_type) => todo!("Implement dnode type {obj_type:?} with bonus buffer type {bonus_type:?}!"),
+            (obj_type, bonus_type) => {
+                use crate::ansi_color::*;
+                if cfg!(feature = "debug") {
+                    println!("{YELLOW}Warning{WHITE}: Tried to parse dnode type {obj_type:?} with bonus buffer type {bonus_type:?}, which is not supported!")
+                }
+                return None;
+            }
         })
+    }
+
+    pub fn get_inner(&mut self) -> &mut DNodeBase {
+        match self {
+            DNode::ObjectDirectory(d) => &mut d.0,
+            DNode::DSLDirectory(d) => &mut d.0,
+            DNode::DSLDataset(d) => &mut d.0,
+            DNode::MasterNode(d) => &mut d.0,
+            DNode::DirectoryContents(d) => &mut d.0,
+            DNode::PlainFileContents(d) => &mut d.0,
+            DNode::SystemAttributesMasterNode(d) => &mut d.0,
+            DNode::SystemAttributesLayouts(d) => &mut d.0,
+            DNode::SystemAttributesRegistrations(d) => &mut d.0,
+        }
     }
 }
 
@@ -524,12 +560,16 @@ pub struct ObjSet {
 }
 
 impl ObjSet {
+    pub fn get_ondisk_size() -> usize { 1024 }
+
     pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<ObjSet>
     where Iter: Iterator<Item = u8> + Clone {
         let (metadnode, metadnode_type, _) = DNodeBase::from_bytes_le(data)?;
         if metadnode_type != ObjType::DNode { 
             use crate::ansi_color::*;
-            println!("{YELLOW}Warning{WHITE}: Tried to open objset with metadnode of type: {:?}, sanity check failed!", metadnode_type);
+            if cfg!(feature = "debug"){
+                println!("{YELLOW}Warning{WHITE}: Tried to open objset with metadnode of type: {:?}, sanity check failed!", metadnode_type);
+            }
             return None; 
         }
 

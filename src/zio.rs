@@ -2,7 +2,7 @@ use std::{fmt::Debug, collections::HashMap};
 use crate::{byte_iter::ByteIter, Vdev, fletcher, lz4, dmu, lzjb};
 
 
-struct DataVirtualAddress {
+pub struct DataVirtualAddress {
     vdev_id: u32,
     data_allocated_size_minus_one_in_sectors: u32, // technically a u24
     offset_in_sectors: u64, // 1 sector = 512 bytes, offset is after the labels and the boot block
@@ -17,6 +17,14 @@ impl Debug for DataVirtualAddress {
 
 
 impl DataVirtualAddress {
+   pub fn from(vdev_id: u32, asize_in_bytes: u32, offset_in_bytes: u64, is_gang: bool) -> DataVirtualAddress {
+        DataVirtualAddress {
+            vdev_id, 
+            data_allocated_size_minus_one_in_sectors: (asize_in_bytes/512)-1, 
+            offset_in_sectors: offset_in_bytes/512, 
+            is_gang
+        }
+   }
    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<DataVirtualAddress> {
     let vdev_id = ((data.read_u32_le()?) & 0xFF_FF_FF_00) >> 8; // ignore padding ( https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L129 )
     let grid_and_asize = data.read_u32_le()?;
@@ -55,23 +63,14 @@ impl DataVirtualAddress {
             // Source: https://github.com/openzfs/zfs/blob/master/lib/libzfs/libzfs_dataset.c#L5357
             
             // TODO: Don't just skip the parity sectors
-            let mut res_without_parity = Vec::<&[u8]>::new();
-            for sector in res
-            .chunks(vdev.get_asize())
-            .enumerate()
-            .filter(|(index, _)| index % raidz_info.ndevices != 0 /* skips the parity sectors */)
-            .map(|(_, value)| value) {
-                res_without_parity.push(sector);
+            let mut res_transposed = Vec::<u8>::new();
+            for row_number in raidz_info.nparity..raidz_info.ndevices {
+                for data in res.chunks(vdev.get_asize()).skip(row_number).step_by(raidz_info.ndevices) {
+                    res_transposed.extend(data);
+                }
             }
 
-            let mut res_transposed = Vec::<u8>::new();
-            for row_number in 0..(raidz_info.ndevices-raidz_info.nparity) {
-                for data in res_without_parity.iter().skip(row_number).step_by(raidz_info.ndevices-raidz_info.nparity) {
-                    res_transposed.extend(*data);
-                }
-            } 
-
-            if size > res_transposed.len(){
+            if res_transposed.len() > size {
                 res_transposed.resize(size, 0);
             }
 
@@ -242,7 +241,9 @@ impl NormalBlockPointer {
         // Check encrypted bit
         if (info>>61)&1 != 0 {
             use crate::ansi_color::*;
-            println!("{YELLOW}Warning{WHITE}: Attempted to read encrypted block pointer as normal block pointer!");
+            if cfg!(feature = "debug"){
+                println!("{YELLOW}Warning{WHITE}: Attempted to read encrypted block pointer as normal block pointer!");
+            }
             return None;
         }
 
@@ -302,7 +303,9 @@ impl NormalBlockPointer {
 
             if computed_checksum != self.checksum {
                 use crate::ansi_color::*;
-                println!("{YELLOW}Warning{WHITE}: Invalid checksum for dva: {:?}, ignoring this dva.", dva);
+                if cfg!(feature = "debug") {
+                    println!("{YELLOW}Warning{WHITE}: Invalid checksum for dva: {:?}, ignoring this dva.", dva);
+                }
                 continue;
             }
 
@@ -376,7 +379,9 @@ impl EmbeddedBlockPointer {
         // Check encrypted bit
         if (info>>61)&1 != 0 {
             use crate::ansi_color::*;
-            println!("{YELLOW}Warning{WHITE}: Attempted to read encrypted block pointer as embedded block pointer!");
+            if cfg!(feature = "debug"){
+                println!("{YELLOW}Warning{WHITE}: Attempted to read encrypted block pointer as embedded block pointer!");
+            }
             return None;
         }
 
