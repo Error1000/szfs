@@ -72,7 +72,6 @@ fn main() {
     println!("{CYAN}Info{WHITE}: Found {} uberblocks!", uberblocks.len());
     uberblocks.sort_unstable_by(|a, b| a.txg.cmp(&b.txg));
 
-        
     let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
     vdevs.insert(0usize, &mut vdev_raidz);
 
@@ -116,7 +115,7 @@ fn main() {
     let dmu::DNode::MasterNode(mut head_dataset_master_node) = head_dataset_object_set.get_dnode_at(1, &mut vdevs).unwrap() else {
         panic!("DNode 1 which is the master_node is not a master node!");
     };
-    
+
     let master_node_zap_data = head_dataset_master_node.dump_zap_contents(&mut vdevs).unwrap();
 
     println!("{CYAN}Info{WHITE}: Root dataset master node zap: {:?}", master_node_zap_data);
@@ -138,8 +137,8 @@ fn main() {
 
     let root_node_zap_data = root_node.dump_zap_contents(&mut vdevs).unwrap();
     println!("Root directory: {:?}", root_node_zap_data);
-/*
-    let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.mkv"] else {
+
+    let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.txt"] else {
         panic!("File entry is not a number!");
     };
 
@@ -155,8 +154,9 @@ fn main() {
     let zpl::Value::U64(file_len) = file_info["ZPL_SIZE"] else {
         panic!("File length is not a number!");
     };
-    OpenOptions::new().create(true).write(true).open("test.mkv")
+    
+    OpenOptions::new().create(true).write(true).open("test.txt")
     .unwrap()
     .write_all(&file_node.0.read(0, file_len as usize, &mut vdevs).unwrap())
-    .unwrap();    */
+    .unwrap();    
 }
