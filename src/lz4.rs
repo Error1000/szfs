@@ -34,7 +34,7 @@ pub fn lz4_decompress_blocks(data: &mut impl Iterator<Item = u8>) -> Result<Vec<
             }
         };
 
-        if lookback == 0 {
+        if lookback as usize > output_buf.len() || lookback == 0 {
             // Invalid lz4 block
             return Err(());
         }
@@ -49,9 +49,7 @@ pub fn lz4_decompress_blocks(data: &mut impl Iterator<Item = u8>) -> Result<Vec<
         }
 
         lookback_size += 4;
-        if lookback as usize > output_buf.len() || lookback <= 0 {
-            return Err(());
-        }
+
 
         // Repeat lookback_size bytes from lookback bytes ago
         // Note: Yes this can copy more bytes than the lookback because the buffer will grow while we are reading it

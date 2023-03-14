@@ -194,8 +194,8 @@ impl Debug for DNodeBase {
 
 #[derive(Debug)]
 struct IndirectBlockTag {
-    id: usize, // Which number is the block if you were to sequentially lay out all the blocks at this level
-    offset: usize // At what index in the block can you find the pointer to the next level 
+    parent_id: usize, // Id of the block on the upper layer that contains the block that we want
+    offset: usize // At what index in the upper layer block can you find the pointer to the this layer's block (the block that we want) 
 }
 
 impl DNodeBase {
@@ -312,9 +312,12 @@ impl DNodeBase {
         2usize.pow(u32::from(self.indirect_blocksize_log2))
     }
 
+    // blocks_per_indirect_block is the branching factor of the upper layer
+    // current_level_id is the id of the node in the current layer
+    // Returns: The id of the parent block in the upper layer and the offset in the parent block
     fn next_level_id_and_offset(&self, current_level_id: usize, blocks_per_indirect_block: usize) -> IndirectBlockTag {
         IndirectBlockTag {
-            id: current_level_id/blocks_per_indirect_block, 
+            parent_id: current_level_id/blocks_per_indirect_block, 
             offset: current_level_id%blocks_per_indirect_block
         }
     }
@@ -329,22 +332,24 @@ impl DNodeBase {
         let blocks_per_indirect_block = self.parse_indirect_block_size()/BlockPointer::get_ondisk_size();
 
         let mut levels: Vec<IndirectBlockTag> = Vec::new();
-        for level in 0..self.n_indirect_levels {
-            let actual_id = if level == 0 {
+        // Note: We are traversing the tree backwards from the leafs to the root
+        for level in 1..=self.n_indirect_levels {
+            let actual_id = if level == 1 {
                 block_id
             } else {
-                levels.last().unwrap().id
+                levels.last().unwrap().parent_id
             };
 
-            let actual_block_per_indirect_block = if level == self.n_indirect_levels-1 {
+            let actual_blocks_per_indirect_block = if level == self.n_indirect_levels {
                 self.block_pointers.len()
             } else {
                 blocks_per_indirect_block
             };
             
-            levels.push(self.next_level_id_and_offset(actual_id, actual_block_per_indirect_block));
+            levels.push(self.next_level_id_and_offset(actual_id, actual_blocks_per_indirect_block));
         }
-        // Travel back down the levels
+
+        // Travel back down to the leafs
         let top_level = levels.pop().unwrap();
         let mut indirect_block_data;
         let mut next_block_pointer_ref = &mut self.block_pointers[top_level.offset];

@@ -3,6 +3,9 @@ name = "szfs"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+debug = []
+
 [[bin]]
 name = "fs-walker"
 src = "src/fs-walker.rs"

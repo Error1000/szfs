@@ -7,15 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'szfs'",
+            "name": "Debug executable 'fs-walker'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=szfs",
+                    "--bin=fs-walker",
                     "--package=szfs"
                 ],
                 "filter": {
-                    "name": "szfs",
+                    "name": "fs-walker",
                     "kind": "bin"
                 }
             },

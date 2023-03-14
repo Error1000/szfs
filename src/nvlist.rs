@@ -138,9 +138,7 @@ fn read_string_and_size(data: &mut impl Iterator<Item = u8>) -> Option<(String, 
     let result_size_aligned = if result_size % 4 == 0 { result_size } else { ((result_size/4)+1)*4 };
     let result = read_string_raw(data, result_size as usize);
     let padding_bytes = result_size_aligned - result_size;
-    if padding_bytes > 0 {
-        data.skip_n_bytes(padding_bytes as usize)?; // Consume the padding bytes
-    }
+    data.skip_n_bytes(padding_bytes as usize)?; // Consume the padding bytes
     result.map(|res|(res, result_size_aligned as usize+4))
 }
 
@@ -179,13 +177,13 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
         let decode_size = data.read_u32_be()?;
         if encode_size == 0 && decode_size == 0 { break; } // The nv_list has 8 bytes of zeroes at the end
 
-        // decode_size = 4(for the size of the size itself) + 4(size of string) + size of string with padding + 4(size of value type) + 4(size of the number of values) + n(size of value(s))
-        let (name, bytes_read) = read_string_and_size(data)?;
+        // decode_size = 4(for the size of the size itself) + 4 (size of size of string) + size of string with padding + 4(size of value type) + 4(size of the number of values) + n*(size of value)
+        let (name, string_bytes_read) = read_string_and_size(data)?;
 
         let Some(value_type) = ValueType::from_value(data.read_u32_be()?) else {
             println!("Unknown nvlist value type with name: \"{}\", ignoring entry, which was {} bytes in size!", name, decode_size);
             let value_size = decode_size-(
-                bytes_read as u32
+                string_bytes_read as u32
                 +4 /*size of decode_size*/
                 +4 /*size of value_type*/
             );

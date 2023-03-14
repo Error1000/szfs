@@ -105,27 +105,29 @@ impl SystemAttributes {
     pub fn from_attributes_node_number(system_attributes_info_number: usize, dataset_object_set: &mut ObjSet, vdevs: &mut Vdevs) -> Option<SystemAttributes> {
         use crate::ansi_color::*;
 
-        let DNode::SystemAttributesMasterNode(mut sa_info) = dataset_object_set.get_dnode_at(system_attributes_info_number as usize, vdevs).unwrap() else {
-            panic!("System attributes master node is of the wrong type!");
+        let DNode::SystemAttributesMasterNode(mut sa_info) = dataset_object_set.get_dnode_at(system_attributes_info_number as usize, vdevs)? else {
+            println!("{YELLOW}Warning{WHITE}: System attributes master node is of the wrong type!");
+            return None;
         };
     
-        let sa_info_zap_data = sa_info.dump_zap_contents(vdevs).unwrap();
+        let sa_info_zap_data = sa_info.dump_zap_contents(vdevs)?;
         println!("{CYAN}Info{WHITE}: System attributes master node zap: {:?}", sa_info_zap_data);
     
 
         let mut system_attributes_layouts_zap_data = {
             let zap::Value::U64(system_attributes_layouts_number) = sa_info_zap_data["LAYOUTS"] else {
-                panic!("System attributes layouts node number is not a number!");
+                println!("{YELLOW}Warning{WHITE}: System attributes layouts node number is not a number!");
+                return None;
             };
     
     
-            let DNode::SystemAttributesLayouts(mut system_attributes_layouts) = dataset_object_set.get_dnode_at(system_attributes_layouts_number as usize, vdevs).unwrap() else {
-                panic!("System attributes layouts node is of the wrong type!");
+            let DNode::SystemAttributesLayouts(mut system_attributes_layouts) = dataset_object_set.get_dnode_at(system_attributes_layouts_number as usize, vdevs)? else {
+                println!("{YELLOW}Warning{WHITE}: System attributes layouts node is of the wrong type!");
+                return None;
             };
     
             system_attributes_layouts
-            .dump_zap_contents(vdevs)
-            .unwrap()
+            .dump_zap_contents(vdevs)?
             .into_iter()
             .map(|(key, value)| {
                 let zap::Value::U16Array(value) = value else {
