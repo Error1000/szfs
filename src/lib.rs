@@ -222,7 +222,7 @@ impl Vdev for VdevRaidz<'_> {
             bytes_written += self.get_asize();
         }else{
             let mut first_sector = self.read_sector(first_sector_index)?;
-            for overwrite_index in first_sector_offset..self.get_asize()-first_sector_offset {
+            for overwrite_index in first_sector_offset..self.get_asize() {
                 first_sector[overwrite_index] = data[bytes_written];
                 bytes_written += 1;
                 if bytes_written >= data.len() { break; }
@@ -242,13 +242,13 @@ impl Vdev for VdevRaidz<'_> {
         }
 
         if size_remaining%self.get_asize() != 0 {
-            let mut last_sector = self.read_sector((full_sectors_to_write+1) as u64)?;
+            let mut last_sector = self.read_sector(first_sector_index+(full_sectors_to_write as u64)+1)?;
             for overwrite_index in 0..self.get_asize() {
                 last_sector[overwrite_index] = data[bytes_written];
                 bytes_written += 1;
                 if bytes_written >= data.len() { break; }
             }
-            self.write_sector((full_sectors_to_write+1) as u64, &last_sector)?;
+            self.write_sector(first_sector_index+(full_sectors_to_write as u64)+1, &last_sector)?;
         } 
 
         assert!(bytes_written == data.len());
