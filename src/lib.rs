@@ -1,7 +1,8 @@
 #![allow(dead_code)]
-use std::{fs::File, io::{SeekFrom, Seek, Read, Write}, collections::HashMap};
+use std::{fs::File, io::{SeekFrom, Seek, Read, Write}};
 
 use byte_iter::ByteIter;
+use zio::Vdevs;
 
 pub mod nvlist;
 pub mod byte_iter;
@@ -127,7 +128,7 @@ impl From<File> for VdevFile {
 
 
 pub struct VdevRaidz<'a> {
-    devices: HashMap<usize, &'a mut dyn Vdev>,
+    devices: Vdevs<'a>,
     size: u64,
     ndevices: usize,
     nparity: usize,
@@ -135,7 +136,7 @@ pub struct VdevRaidz<'a> {
 }
 
 impl<'a> VdevRaidz<'a> {
-    pub fn from_vdevs(devices: HashMap<usize, &'a mut dyn Vdev>, nparity: usize, asize: usize) -> VdevRaidz {
+    pub fn from_vdevs(devices: Vdevs<'a>, nparity: usize, asize: usize) -> VdevRaidz {
         let ndevices = devices.iter().max_by_key(|(k, _)| k.clone()).unwrap().0.clone()+1;
         let size = devices.iter().fold(0, |old, (_, v)| old +  v.get_size());
         VdevRaidz { 
@@ -151,7 +152,6 @@ impl<'a> VdevRaidz<'a> {
         let device_sector_index = sector_index/(self.ndevices as u64);
         let device_number = (sector_index%(self.ndevices as u64)) as usize;
         let asize = self.get_asize();
-
         self.devices
         .get_mut(&device_number)
         .ok_or(())?

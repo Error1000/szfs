@@ -1,5 +1,5 @@
 use std::{collections::HashMap, fs::OpenOptions, io::Write};
-use szfs::{*, zio::CompressionMethod};
+use szfs::{*, zio::{CompressionMethod, Vdevs}};
 
 fn main() {
     use szfs::ansi_color::*;
@@ -51,7 +51,7 @@ fn main() {
     println!("{CYAN}Info{WHITE}: Parsed nv_list, {:?}!", name_value_pairs);
 
 
-    let mut devices: HashMap<usize, &mut dyn Vdev> = HashMap::new();
+    let mut devices = Vdevs::new();
     devices.insert(0, &mut vdev0);
     devices.insert(1, &mut vdev1);
     devices.insert(2, &mut vdev2);

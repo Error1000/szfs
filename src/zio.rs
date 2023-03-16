@@ -25,10 +25,14 @@ impl DataVirtualAddress {
             is_gang
         }
    }
+
    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<DataVirtualAddress> {
     let vdev_id = ((data.read_u32_le()?) & 0xFF_FF_FF_00) >> 8; // ignore padding ( https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L129 )
     let grid_and_asize = data.read_u32_le()?;
     let offset_and_gang_bit = data.read_u64_le()?;
+
+    // A non-existent dva is marked by all zeroes
+    if vdev_id == 0 && grid_and_asize == 0 && offset_and_gang_bit == 0 { return None; }
     Some(DataVirtualAddress { 
         vdev_id, 
         data_allocated_size_minus_one_in_sectors: (grid_and_asize&0xFF_FF_FF_00) >> 8, // ignore GRID as it is reserved 
@@ -48,7 +52,7 @@ impl DataVirtualAddress {
      self.offset_in_sectors*512
    }
 
-   pub fn dereference(&self, vdevs: &mut HashMap<usize, &mut dyn Vdev>, size: usize) -> Result<Vec<u8>, ()> {
+   pub fn dereference(&self, vdevs: &mut Vdevs, size: usize) -> Result<Vec<u8>, ()> {
         if self.is_gang { todo!("Implement GANG blocks!"); }
         if cfg!(feature = "debug"){
             if self.vdev_id != 0 {
@@ -202,7 +206,7 @@ impl CompressionMethod {
 // 3   5     8        8        1 7       16	              16
 
 pub struct NormalBlockPointer {
-    dvas: [DataVirtualAddress; 3],
+    dvas: [Option<DataVirtualAddress>; 3],
     level: usize,
     fill: u64,
     logical_birth_txg: u64,
@@ -236,9 +240,9 @@ impl Debug for NormalBlockPointer {
 impl NormalBlockPointer {
     
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<NormalBlockPointer> {
-        let dva1 = DataVirtualAddress::from_bytes_le(data)?;
-        let dva2 = DataVirtualAddress::from_bytes_le(data)?;
-        let dva3 = DataVirtualAddress::from_bytes_le(data)?;
+        let dva1 = DataVirtualAddress::from_bytes_le(data);
+        let dva2 = DataVirtualAddress::from_bytes_le(data);
+        let dva3 = DataVirtualAddress::from_bytes_le(data);
         let info = data.read_u64_le()?;
 
         // Make sure we don't accidentally read an embedded block pointer
@@ -298,7 +302,7 @@ impl NormalBlockPointer {
 
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data pointed to by the gang blocks once stitched together, and it is done before decompression
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
-        for dva in &self.dvas {
+        for dva in self.dvas.iter().filter_map(|val| val.as_ref()) {
             let Ok(data) = dva.dereference(vdevs, self.parse_physical_size().try_into().unwrap()) else { 
                 use crate::ansi_color::*;
                 println!("{YELLOW}Warning{WHITE}: Invalid dva {:?}", dva);

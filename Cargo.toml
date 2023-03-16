@@ -8,7 +8,9 @@ debug = []
 
 [[bin]]
 name = "fs-walker"
-src = "src/fs-walker.rs"
+
+[[bin]]
+name = "undelete"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

@@ -1,5 +1,5 @@
 use std::{collections::HashMap, fs::OpenOptions, io::Write};
-use szfs::*;
+use szfs::{*, zio::Vdevs};
 
 fn main() {
     use szfs::ansi_color::*;
@@ -51,7 +51,7 @@ fn main() {
     println!("{CYAN}Info{WHITE}: Parsed nv_list, {:?}!", name_value_pairs);
 
 
-    let mut devices: HashMap<usize, &mut dyn Vdev> = HashMap::new();
+    let mut devices = Vdevs::new();
     devices.insert(0, &mut vdev0);
     devices.insert(1, &mut vdev1);
     devices.insert(2, &mut vdev2);
@@ -138,7 +138,7 @@ fn main() {
     let root_node_zap_data = root_node.dump_zap_contents(&mut vdevs).unwrap();
     println!("Root directory: {:?}", root_node_zap_data);
 
-    let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.txt"] else {
+    let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.mkv"] else {
         panic!("File entry is not a number!");
     };
 
@@ -154,9 +154,9 @@ fn main() {
     let zpl::Value::U64(file_len) = file_info["ZPL_SIZE"] else {
         panic!("File length is not a number!");
     };
-    
-    OpenOptions::new().create(true).write(true).open("test.txt")
+    println!("File size: {:?}", file_len);
+    OpenOptions::new().create(true).write(true).open("test.mkv")
     .unwrap()
     .write_all(&file_node.0.read(0, file_len as usize, &mut vdevs).unwrap())
-    .unwrap();    
+    .unwrap();   
 }
