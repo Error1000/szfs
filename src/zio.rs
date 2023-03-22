@@ -65,25 +65,37 @@ impl DataVirtualAddress {
             }
         }
         
-        // TODO: Figure out why plain file contents dvas at the end of the indirect block tree have vdev id 1
         let Some(vdev) = vdevs.get_mut(&0) else { return Err(()); };
         if let Some(raidz_info) = vdev.get_raidz_info() {
-            assert!(raidz_info.nparity == 1);
             let number_of_data_sectors = if size % vdev.get_asize() == 0 { size/vdev.get_asize() } else { (size/vdev.get_asize())+1};
             let number_of_stripes = if number_of_data_sectors%(raidz_info.ndevices-raidz_info.nparity) == 0 { number_of_data_sectors/(raidz_info.ndevices-raidz_info.nparity) } else { number_of_data_sectors/(raidz_info.ndevices-raidz_info.nparity)+1 };
             let number_of_parity_sectors = number_of_stripes*raidz_info.nparity;
 
+            // TODO: Make sure this handles skip blocks correctly
             let size_with_parity = (number_of_data_sectors+number_of_parity_sectors)*vdev.get_asize();
             let res = vdev.read(self.parse_offset(), size_with_parity)?;
             
-            // Source: https://github.com/openzfs/zfs/blob/master/lib/libzfs/libzfs_dataset.c#L5357
             
+
+            // If we are doing raidz1, then the parity siwtches places with the first data column on odd megabyte offsets
+            // I'm not kidding, THAT is how it actually works, that was a fun one to debug :)
+            // Source: https://github.com/openzfs/zfs/blob/master/module/zfs/vdev_raidz.c#L398
+            // Second source: https://github.com/openzfs/zfs/issues/12538#issuecomment-1251651412
+
+            let mut column_mapping = (0..raidz_info.ndevices).collect::<Vec<usize>>();
+            if raidz_info.nparity == 1 && (self.parse_offset()/(1*1024*1024))%2 != 0 {
+                column_mapping.swap(0, 1);
+            }
+            
+            // We have to transpose the data blocks
+            // Source: https://github.com/openzfs/zfs/blob/master/lib/libzfs/libzfs_dataset.c#L5357
             let mut res_transposed = Vec::<u8>::new();
             // Note: Each disk is usually a single row (however this may not be true if raidz expansion took place, but thanks to the abstractions made by VdevRaidz this doesn't matter)
             // Source: https://youtu.be/Njt82e_3qVo?t=2810
             // TODO: Don't just skip the parity sectors
-            for row_number in raidz_info.nparity..raidz_info.ndevices {
-                for sector in res.chunks(vdev.get_asize()).skip(row_number).step_by(raidz_info.ndevices) {
+            for column_number in raidz_info.nparity..raidz_info.ndevices {
+                let actual_column = column_mapping[column_number];
+                for sector in res.chunks(vdev.get_asize()).skip(actual_column).step_by(raidz_info.ndevices) {
                     res_transposed.extend(sector);
                 }
             }
