@@ -17,6 +17,10 @@ impl Debug for DataVirtualAddress {
 
 
 impl DataVirtualAddress {
+   pub fn get_ondisk_size() -> usize {
+        core::mem::size_of::<u64>()*2
+   }
+
    pub fn from(vdev_id: u32, asize_in_bytes: u32, offset_in_bytes: u64, is_gang: bool) -> DataVirtualAddress {
         DataVirtualAddress {
             vdev_id, 
@@ -239,10 +243,14 @@ impl Debug for NormalBlockPointer {
 
 impl NormalBlockPointer {
     
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<NormalBlockPointer> {
-        let dva1 = DataVirtualAddress::from_bytes_le(data);
-        let dva2 = DataVirtualAddress::from_bytes_le(data);
-        let dva3 = DataVirtualAddress::from_bytes_le(data);
+    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<NormalBlockPointer> 
+    where Iter: Iterator<Item = u8> + Clone {
+        let dva1 = DataVirtualAddress::from_bytes_le(&mut data.clone());
+        data.skip_n_bytes(DataVirtualAddress::get_ondisk_size())?;
+        let dva2 = DataVirtualAddress::from_bytes_le(&mut data.clone());
+        data.skip_n_bytes(DataVirtualAddress::get_ondisk_size())?;
+        let dva3 = DataVirtualAddress::from_bytes_le(&mut data.clone());
+        data.skip_n_bytes(DataVirtualAddress::get_ondisk_size())?;
         let info = data.read_u64_le()?;
 
         // Make sure we don't accidentally read an embedded block pointer
@@ -267,7 +275,7 @@ impl NormalBlockPointer {
         }
 
         // Skip padding
-        data.skip_n_bytes(core::mem::size_of::<u64>()*3);
+        data.skip_n_bytes(core::mem::size_of::<u64>()*3)?;
         let logical_birth_txg = data.read_u64_le()?;
         let fill_count = data.read_u64_le()?;
         let checksum = [data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?];

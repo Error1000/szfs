@@ -87,13 +87,23 @@ impl Vdev for VdevFile {
     }
 
     fn read(&mut self, mut offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
-        if offset_in_bytes >= self.get_size()-4*1024*1024-2*256*1024 { return Err(()); }
+        // 4 mb at the beginning and 2 labels at the end
+        if offset_in_bytes >= self.get_size()-4*1024*1024-2*256*1024 { 
+            use ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Offset: {:?} is past the end of device {:?}!", offset_in_bytes, self);
+            return Err(()); 
+        }
         offset_in_bytes += 4*1024*1024;
         self.read_raw(offset_in_bytes, amount_in_bytes)
     }
 
     fn write(&mut self, mut offset_in_bytes: u64, data: &[u8]) -> Result<(), ()> {
-        if offset_in_bytes >= self.get_size()-4*1024*1024-2*256*1024 { return Err(()); }
+        // 4 mb at the beginning and 2 labels at the end
+        if offset_in_bytes >= self.get_size()-4*1024*1024-2*256*1024 {
+            use ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Offset: {:?} is past the end of device {:?}!", offset_in_bytes, self);
+            return Err(()); 
+        }
         offset_in_bytes += 4*1024*1024;
         self.write_raw(offset_in_bytes, data)
     }
