@@ -1,0 +1,30 @@
+Fragments: File fragment(from indirect blocks), Objset fragment(from indirect blocks), File DNode, Directory DNode, Objset DNode, Indirect Blocks
+
+We will use a hash set to store the fragments,
+this is to avoid doing duplicate work and
+to give me an easy way to create a graph,
+by simply storing the hashes of the children nodes in the parent node.
+The hash is going to be handled the same way zfs handles hashing block pointers to the objects.
+That is the actual object's data is hashed.
+
+Stage 1.
+Collect basic fragments.
+Basic Fragments: File DNode, Directory DNode, Objset DNode, Indirect Blocks
+These are called basic because they only cover one block,
+that block must be compressed with default compression(lz4) since all of these fragments are metadata,
+and is usually 512 bytes in size for both indirect blocks and objsets.
+The reason file dnodes and directory dnodes are also here is that they might sometimes end up
+in a "metadata" block and we want to cover all bases.
+
+Stage 2.
+Build dependency graph
+This is to avoid looking over the same data twice
+
+Step 3.
+Expand root fragments
+
+Step 4.
+Rebuild dependency graph
+
+Step 5.
+Show root fragments as result
