@@ -14,6 +14,7 @@ pub trait ByteIter {
     fn read_u64_be(&mut self) -> Option<u64>;
     fn read_u64_le(&mut self) -> Option<u64>;
 
+    #[must_use]
     fn skip_n_bytes(&mut self, n_bytes: usize) -> Option<()>;
 }
 

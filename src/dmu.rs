@@ -281,13 +281,21 @@ impl DNodeBase {
         if rounded_up_total_size != (usize::from(extra_slots)+1)*512 {
             use crate::ansi_color::*;
             if cfg!(feature = "debug") {
-                println!("{YELLOW}Warning{WHITE}: Tried to parse an invalid dnode whose size doesn't make sense!");
+                println!("{YELLOW}Warning{WHITE}: Tried to parse an dnode whose (nslots) size doesn't match up with the actual size read!");
             }
             return None;
         }
 
         let tail_padding_size = rounded_up_total_size-total_size;
-        data.skip_n_bytes(tail_padding_size)?;
+        // We have all the data, and we don't need any data after the tail padding bytes
+        // So if we can't read the tail padding bytes it's not the end of the world
+        // Just log it
+        if data.skip_n_bytes(tail_padding_size).is_none() {
+            use crate::ansi_color::*;
+            if cfg!(feature = "debug"){
+                println!("{YELLOW}Warning{WHITE}: Tried to parse dnode whose size is smaller than expected, thankfully all the data is still there ( the only missing part is in the padding in the tail ) so we won't error out!")
+            }
+        }
 
         Some((DNodeBase { 
             indirect_blocksize_log2, 
@@ -323,11 +331,11 @@ impl DNodeBase {
     }
 
     pub fn get_data_size(&self) -> usize {
-        usize::try_from(self.max_indirect_block_id+1).unwrap()*self.parse_data_block_size()
+        ((self.max_indirect_block_id+1) as usize)*self.parse_data_block_size()
     }
 
     pub fn read_block(&mut self, block_id: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
-        if block_id > self.max_indirect_block_id.try_into().unwrap() { return Err(()); }
+        if block_id > self.max_indirect_block_id as usize { return Err(()); }
         assert!(self.n_indirect_levels >= 1);
         let blocks_per_indirect_block = self.parse_indirect_block_size()/BlockPointer::get_ondisk_size();
 
@@ -359,7 +367,7 @@ impl DNodeBase {
             let cur_level = levels.pop().unwrap();
             next_block_pointer = {
                 let mut iter = indirect_block_data.iter().copied();
-                iter.skip_n_bytes(BlockPointer::get_ondisk_size()*cur_level.offset);
+                iter.skip_n_bytes(BlockPointer::get_ondisk_size()*cur_level.offset).ok_or(())?;
                 BlockPointer::from_bytes_le(&mut iter).ok_or(())?
             };
             next_block_pointer_ref = &mut next_block_pointer;
@@ -499,6 +507,10 @@ pub enum DNode {
 }
 
 impl DNode {
+    pub fn get_n_slots_from_bytes_le(data: impl Iterator<Item = u8>) -> Option<usize> {
+        DNodeBase::get_n_slots_from_bytes_le(data)
+    }
+    
     pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<DNode>
     where Iter: Iterator<Item = u8> + Clone {
         let (dnode_base, dnode_type, bonus_data_type) = DNodeBase::from_bytes_le(data)?;
@@ -559,13 +571,13 @@ impl ObjSetType {
 
 #[derive(Debug)]
 pub struct ObjSet {
-    metadnode: DNodeBase,
-    zil: Option<ZilHeader>,
-    typ: ObjSetType
+    pub metadnode: DNodeBase,
+    pub zil: Option<ZilHeader>,
+    pub typ: ObjSetType
 }
 
 impl ObjSet {
-    pub fn get_ondisk_size() -> usize { 1024 }
+    pub const fn get_ondisk_size() -> usize { 1024 }
 
     pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<ObjSet>
     where Iter: Iterator<Item = u8> + Clone {
@@ -573,19 +585,25 @@ impl ObjSet {
         if metadnode_type != ObjType::DNode { 
             use crate::ansi_color::*;
             if cfg!(feature = "debug"){
-                println!("{YELLOW}Warning{WHITE}: Tried to open objset with metadnode of type: {:?}, sanity check failed!", metadnode_type);
+                println!("{YELLOW}Warning{WHITE}: Tried to parse objset with metadnode of type: {:?}, that is not the right type!", metadnode_type);
             }
             return None; 
         }
 
         let zil = ZilHeader::from_bytes_le(&mut data.clone());
-        data.skip_n_bytes(ZilHeader::get_ondisk_size());
+        data.skip_n_bytes(ZilHeader::get_ondisk_size())?;
 
         let typ = ObjSetType::from_value(data.read_u64_le()?.try_into().ok()?)?;
-        // Consume padding up to 1k
-        let size = metadnode.get_ondisk_size() + ZilHeader::get_ondisk_size() + core::mem::size_of::<u64>();
-        let remaining = 1024 - size;
-        data.skip_n_bytes(remaining)?;
+        // Consume padding
+        let size_read = metadnode.get_ondisk_size() + ZilHeader::get_ondisk_size() + core::mem::size_of::<u64>();
+        let remaining = Self::get_ondisk_size() - size_read;
+        if data.skip_n_bytes(remaining).is_none(){
+            use crate::ansi_color::*;
+            if cfg!(feature = "debug"){
+                println!("{YELLOW}Warning{WHITE}: Tried to parse objset whose size is smaller than expected, thankfully all the data is still there ( the only missing part is in the padding in the tail ) so we won't error out!")
+            }
+        }
+
         Some(ObjSet { 
             metadnode, 
             zil, 
@@ -599,7 +617,6 @@ impl ObjSet {
         data.extend(self.metadnode.read(((index+1)*512) as u64, (dnode_slots-1)*512, vdevs).ok()?.iter());
         DNode::from_bytes_le(&mut data.iter().copied())
     }
-
 }
 
 

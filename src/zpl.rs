@@ -152,10 +152,9 @@ impl SystemAttributes {
             };
     
             system_attributes_registrations
-            .dump_zap_contents(vdevs)
-            .unwrap()
+            .dump_zap_contents(vdevs)?
             .into_iter()
-            .map(|(key, value)|{
+            .map(|(key, value)| {
                 let zap::Value::U64(val) = value else { panic!("System attributes registration is invalid!"); };
                 let registration = zpl::SystemAttributesRegistration::from_value(val);
                 (registration.attribute_id, SystemAttribute{
@@ -188,7 +187,17 @@ impl SystemAttributes {
                 "ZPL_XATTR" | "ZPL_RDEV" | "ZPL_FLAGS" | "ZPL_UID" | "ZPL_GID" |
                 "ZPL_PAD" | "ZPL_DACL_COUNT" | "ZPL_PROJID" => {
                     if attribute_info.len == 0 { panic!("System Attribute \"{}\" does not have a variable size according to the zfs source code (the scond column contains the size of the attribute in bytes, it's 0 for variable size): (https://github.com/openzfs/zfs/blob/master/module/zfs/zfs_sa.c#L34), but was read from disk as having a variable size!", attribute_info.name); }
-                    if attribute_info.byteswap_function != 0 { println!("{YELLOW}Warning{WHITE}: Unsupported byte swap function on attribute \"{}\", ignoring!", attribute_info.name); continue; }
+                    if attribute_info.byteswap_function != 0 {
+                        println!("{YELLOW}Warning{WHITE}: Unsupported byte swap function on attribute \"{}\", ignoring!", attribute_info.name);
+                        // NOTE: If it's the last attribute, even if we don't know how much to skip, it doesn't matter
+                        if attribute_info.len == 0 && attribute_index != layout.len()-1 {
+                            panic!("Unsupported system attribute \"{}\" has variable size, can't ignore it if we don't know how much to ignore!", attribute_info.name);
+                        }
+
+                        data.skip_n_bytes(attribute_info.len as usize)?;
+                        continue; 
+                    }
+
                     let nvalues = attribute_info.len/8;
                     if nvalues == 1 {
                         let attribute_value = data.read_u64_le()?;
@@ -205,7 +214,9 @@ impl SystemAttributes {
                 _ => {
                     println!("{YELLOW}Warning{WHITE}: Unsupported system attribute \"{}\", ignoring!", attribute_info.name);
                     // NOTE: If it's the last attribute, even if we don't know how much to skip, it doesn't matter
-                    if attribute_info.len == 0 && attribute_index != layout.len()-1 {panic!("Unsupported system attribute \"{}\" has variable size, can't ignore it if we don't know how much to ignore!", attribute_info.name);}
+                    if attribute_info.len == 0 && attribute_index != layout.len()-1 {
+                        panic!("Unsupported system attribute \"{}\" has variable size, can't ignore it if we don't know how much to ignore!", attribute_info.name);
+                    }
                     data.skip_n_bytes(attribute_info.len as usize)?;
                 },
             }

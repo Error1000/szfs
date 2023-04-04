@@ -109,6 +109,7 @@ fn main() {
     let mut head_dataset_bonus = head_dataset.parse_bonus_data().unwrap();
     let head_dataset_blockpointer = head_dataset_bonus.get_block_pointer();
 
+    println!("{CYAN}Info{WHITE}: Head dataset objset block pointer: {:?}", head_dataset_blockpointer);
     // Now we have access to the dataset we are interested in
     let mut head_dataset_object_set = dmu::ObjSet::from_bytes_le(&mut head_dataset_blockpointer.dereference(&mut vdevs).unwrap().iter().copied()).unwrap();
 
@@ -138,7 +139,7 @@ fn main() {
     let root_node_zap_data = root_node.dump_zap_contents(&mut vdevs).unwrap();
     println!("Root directory: {:?}", root_node_zap_data);
 
-    let zap::Value::U64(mut file_node_number) = root_node_zap_data["test.mkv"] else {
+    let zap::Value::U64(mut file_node_number) = root_node_zap_data["file.bin"] else {
         panic!("File entry is not a number!");
     };
 
@@ -155,7 +156,7 @@ fn main() {
         panic!("File length is not a number!");
     };
     println!("File size: {:?}", file_len);
-    OpenOptions::new().create(true).write(true).open("test.mkv")
+    OpenOptions::new().create(true).write(true).open("file.bin")
     .unwrap()
     .write_all(&file_node.0.read(0, file_len as usize, &mut vdevs).unwrap())
     .unwrap();   

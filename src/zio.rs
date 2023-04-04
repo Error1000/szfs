@@ -17,7 +17,7 @@ impl Debug for DataVirtualAddress {
 
 
 impl DataVirtualAddress {
-   pub fn get_ondisk_size() -> usize {
+   pub const fn get_ondisk_size() -> usize {
         core::mem::size_of::<u64>()*2
    }
 
@@ -57,7 +57,7 @@ impl DataVirtualAddress {
    }
 
    pub fn dereference(&self, vdevs: &mut Vdevs, size: usize) -> Result<Vec<u8>, ()> {
-        if self.is_gang { todo!("Implement GANG blocks!"); }
+        if self.is_gang { println!("TODO: Implement GANG blocks!"); return Err(()); }
         if cfg!(feature = "debug"){
             if self.vdev_id != 0 {
                 use crate::ansi_color::*;
@@ -114,7 +114,7 @@ impl DataVirtualAddress {
 
 pub type Vdevs<'a> = HashMap<usize, &'a mut dyn Vdev>;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ChecksumMethod {
     Inherit = 0,
     On = 1, // equivalent to fletcher4 ( https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L122 )
@@ -156,7 +156,7 @@ impl ChecksumMethod {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum CompressionMethod {
     Inherit = 0,
     On = 1, // Equivalent to lz4 (https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L122)
@@ -202,6 +202,26 @@ impl CompressionMethod {
     }
 }
 
+// NOTE: output_size is currently only used for lzjb
+pub fn try_decompress_block(block_data: &[u8], compression_method: CompressionMethod, output_size: usize) -> Result<Vec<u8>, ()> {
+    let data = match compression_method {
+        CompressionMethod::Off => Vec::from(block_data),
+        CompressionMethod::Lz4 | CompressionMethod::On => {
+            let comp_size = u32::from_be_bytes(block_data[0..4].try_into().unwrap());
+
+            // Note: comp_size+4 may be equal to block_data.len(), just not greater
+            if comp_size as usize + 4 > block_data.len() {
+                return Err(());
+            }
+
+            // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
+            lz4::lz4_decompress_blocks(&mut block_data[4..comp_size as usize+4].iter().copied())?
+        },
+        CompressionMethod::Lzjb => lzjb::lzjb_decompress(&mut block_data.iter().copied(), output_size)?,
+        _ => todo!("Implement {:?} compression!", compression_method),
+    };
+    Ok(data)
+}
 
 
 // Byte order (https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L591)
@@ -288,6 +308,7 @@ impl NormalBlockPointer {
 
         // Skip padding
         data.skip_n_bytes(core::mem::size_of::<u64>()*3)?;
+        
         let logical_birth_txg = data.read_u64_le()?;
         let fill_count = data.read_u64_le()?;
         let checksum = [data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?, data.read_u64_le()?];
@@ -323,7 +344,7 @@ impl NormalBlockPointer {
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data pointed to by the gang blocks once stitched together, and it is done before decompression
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
         for dva in self.dvas.iter().filter_map(|val| val.as_ref()) {
-            let Ok(data) = dva.dereference(vdevs, self.parse_physical_size().try_into().unwrap()) else { 
+            let Ok(data) = dva.dereference(vdevs, self.parse_physical_size() as usize) else { 
                 use crate::ansi_color::*;
                 println!("{YELLOW}Warning{WHITE}: Invalid dva {:?}", dva);
                 continue; 
@@ -343,23 +364,24 @@ impl NormalBlockPointer {
                 continue;
             }
 
-            let data = match self.compression_method {
-                CompressionMethod::Off => data,
-                CompressionMethod::Lz4 | CompressionMethod::On => {
-                    let comp_size = u32::from_be_bytes(data[0..4].try_into().unwrap());
-                    // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
-                    lz4::lz4_decompress_blocks(&mut data[4..comp_size as usize+4].iter().copied()).map_err(|_| ())?
-                },
-                CompressionMethod::Lzjb => {
-                    lzjb::lzjb_decompress(&mut data.iter().copied(), self.parse_logical_size() as usize)?
-                },
-                _ => todo!("Implement {:?} compression!", self.compression_method),
+            let Ok(data) = try_decompress_block(&data, self.compression_method, self.parse_logical_size() as usize) else {
+                continue;
             };
-            assert!(data.len() == self.parse_logical_size() as usize);
+
+            if data.len() != self.parse_logical_size() as usize {
+                use crate::ansi_color::*;
+                if cfg!(feature = "debug") {
+                    println!("{YELLOW}Warning{WHITE}: Normal block pointer doesn't point to as much data as it says it should, i refuse to return it's data!");
+                }
+    
+                return Err(());
+            }
+
             // use crate::ansi_color::*;
             // println!("{CYAN}Info{WHITE}: Using dva: {:?}", dva);
             return Ok(data);
         }
+
         if cfg!(feature = "debug") {
             use crate::ansi_color::*;
             println!("{YELLOW}Warning{WHITE}: Failed to dereference block pointer: {:?}.", self);
@@ -466,24 +488,22 @@ impl EmbeddedBlockPointer {
     pub fn dereference(&mut self) -> Result<Vec<u8>, ()> {
         let mut data = self.payload.clone();
 
-        if data.len() > self.parse_physical_size().try_into().unwrap() {
-            data.resize(self.parse_physical_size().try_into().unwrap(), 0);
+        if data.len() > self.parse_physical_size() as usize {
+            data.resize(self.parse_physical_size() as usize, 0);
         }
 
-        let data = match self.compression_method {
-            CompressionMethod::Off => data,
-            CompressionMethod::Lz4 | CompressionMethod::On => {
-                let comp_size = u32::from_be_bytes(data[0..4].try_into().unwrap());
-                // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
-                lz4::lz4_decompress_blocks(&mut data[4..comp_size as usize+4].iter().copied()).map_err(|_| ())?
-            },
-            CompressionMethod::Lzjb => {
-                lzjb::lzjb_decompress(&mut data.iter().copied(), self.parse_logical_size() as usize)?
-            },
-            _ => todo!("Implement {:?} compression!", self.compression_method),
+        let Ok(data) = try_decompress_block(&data, self.compression_method, self.parse_logical_size() as usize) else {
+            return Err(());
         };
 
-        assert!(data.len() == self.parse_logical_size() as usize);
+        if data.len() != self.parse_logical_size() as usize{
+            use crate::ansi_color::*;
+            if cfg!(feature = "debug") {
+                println!("{YELLOW}Warning{WHITE}: Embedded block pointer doesn't contain as much data as it says it should, i refuse to return it's data!");
+            }
+
+            return Err(());
+        }
         return Ok(data);
     }
 
@@ -497,10 +517,10 @@ pub enum BlockPointer {
 }
 
 impl BlockPointer {
-    pub fn get_ondisk_size() -> usize { 128 }
+    pub const fn get_ondisk_size() -> usize { 128 }
 
     pub fn get_info_form_bytes_le(mut data: impl Iterator<Item = u8>) -> Option<u64> {
-        data.skip_n_bytes(6*core::mem::size_of::<u64>());
+        data.skip_n_bytes(6*core::mem::size_of::<u64>())?;
         data.read_u64_le()
     }
 

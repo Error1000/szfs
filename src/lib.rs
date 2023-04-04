@@ -30,11 +30,10 @@ pub mod ansi_color {
 // 4. Implement all nvlist values
 // 5. Implement all fat zap values
 // 6. Implement all system attributes
-// 7. Don't hardcode vdev layout and implement ability to try other labels instead of just using the first one
-// 8. Don't just skip the parity sectors in RAIDZ
-// 9. Properly support sector sizes bigger than 512 bytes
-// 10. Test RAIDZ writing, and in general implement writing
-// 11. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
+// 7. Don't just skip the parity sectors in RAIDZ
+// 8. Make sure we support sector sizes bigger than 512 bytes
+// 9. Test RAIDZ writing, and in general implement writing
+// 10. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
 
 
 pub struct RaidzInfo {
@@ -88,7 +87,7 @@ impl Vdev for VdevFile {
 
     fn read(&mut self, mut offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
         // 4 mb at the beginning and 2 labels at the end
-        if offset_in_bytes >= self.get_size()-4*1024*1024-2*256*1024 { 
+        if offset_in_bytes >= self.get_size()+2*256*1024 { 
             use ansi_color::*;
             println!("{YELLOW}Warning{WHITE}: Offset: {:?} is past the end of device {:?}!", offset_in_bytes, self);
             return Err(()); 
@@ -99,7 +98,7 @@ impl Vdev for VdevFile {
 
     fn write(&mut self, mut offset_in_bytes: u64, data: &[u8]) -> Result<(), ()> {
         // 4 mb at the beginning and 2 labels at the end
-        if offset_in_bytes >= self.get_size()-4*1024*1024-2*256*1024 {
+        if offset_in_bytes >= self.get_size()+2*256*1024 {
             use ansi_color::*;
             println!("{YELLOW}Warning{WHITE}: Offset: {:?} is past the end of device {:?}!", offset_in_bytes, self);
             return Err(()); 
@@ -109,7 +108,12 @@ impl Vdev for VdevFile {
     }
 
     fn get_size(&self) -> u64 {
-        self.device.metadata().unwrap().len()
+        self.device
+        .metadata()
+        .expect("File metadata must be availzble so that we can know the file's size!")
+        .len()
+        -4*1024*1024 /* beginning boot block and labels */
+        -2*256*1024 /* ending labels */
     }
 
     // Source: http://www.giis.co.in/Zfs_ondiskformat.pdf
@@ -119,8 +123,8 @@ impl Vdev for VdevFile {
         match label_index {
             0 => self.read_raw(0, 256*1024),
             1 => self.read_raw(256*1024, 256*1024),
-            2 => self.read_raw(self.get_size()-2*256*1024, 256*1024),
-            3 => self.read_raw(self.get_size()-256*1024, 256*1024),
+            2 => self.read_raw(self.get_size()+4*1024*1024, 256*1024),
+            3 => self.read_raw(self.get_size()+4*1024*1024+256*1024, 256*1024),
             _ => Err(())
         }
     }
@@ -148,7 +152,7 @@ pub struct VdevRaidz<'a> {
 impl<'a> VdevRaidz<'a> {
     pub fn from_vdevs(devices: Vdevs<'a>, nparity: usize, asize: usize) -> VdevRaidz {
         let ndevices = devices.iter().max_by_key(|(k, _)| k.clone()).unwrap().0.clone()+1;
-        let size = devices.iter().fold(0, |old, (_, v)| old +  v.get_size());
+        let size = devices.iter().fold(0, |old, (_, v)| old + v.get_size());
         VdevRaidz { 
             devices, 
             size, 

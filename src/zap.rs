@@ -5,7 +5,7 @@ use crate::byte_iter::ByteIter;
 use crate::dmu::DNodeBase;
 use crate::zio::Vdevs;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 #[repr(u64)]
 enum ZapType {
     MicroZap = (1u64 << 63) + 3,
@@ -84,7 +84,7 @@ pub struct MicroZapEntry {
 }
 
 impl MicroZapEntry {
-    pub fn get_ondisk_size() -> usize {
+    pub const fn get_ondisk_size() -> usize {
         64
     }
 
@@ -256,7 +256,7 @@ pub struct ZapLeafHeader {
 pub const ZAP_LEAF_MAGIC: u32 = 0x2AB1EAF;
 
 impl ZapLeafHeader {
-    pub fn get_ondisk_size() -> usize {
+    pub const fn get_ondisk_size() -> usize {
         48
     }
 
@@ -306,7 +306,7 @@ pub enum ZapLeafChunk {
 }
 
 impl ZapLeafChunk {
-    pub fn get_ondisk_size() -> usize {
+    pub const fn get_ondisk_size() -> usize {
         // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L42
         24
     }
@@ -367,7 +367,7 @@ pub struct ZapPointerTable {
 }
 
 impl ZapPointerTable {
-    pub fn get_ondisk_size() -> usize {
+    pub const fn get_ondisk_size() -> usize {
         core::mem::size_of::<u64>()*5
     }
 
@@ -397,7 +397,10 @@ pub const FAT_ZAP_MAGIC: u64 = 0x2F52AB2AB;
 impl FatZapHeader {
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>, block_size: usize) -> Option<FatZapHeader> {
         let zap_magic = data.read_u64_le()?;
-        assert!(zap_magic == FAT_ZAP_MAGIC);
+        if zap_magic != FAT_ZAP_MAGIC {
+            return None;
+        }
+        
         let table = ZapPointerTable::from_bytes_le(data)?;
         let free_blocks = data.read_u64_le()?;
         let num_leafs = data.read_u64_le()?;

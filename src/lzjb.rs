@@ -16,6 +16,7 @@ pub fn lzjb_decompress(data: &mut impl Iterator<Item = u8>, output_length: usize
         }
 
         if copymap & (copymask as u8) != 0 {
+            // Repeat "lookback_size" bytes from "lookback" bytes ago in the buffer
             let byte0 = data.next().ok_or(())?;
             let byte1 = data.next().ok_or(())?;
             let lookback_size = usize::from(byte0 >> (8-MATCH_BITS)) + MATCH_MIN;

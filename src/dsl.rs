@@ -33,7 +33,7 @@ pub struct DSLDirectoryData {
 }
 
 impl DSLDirectoryData {
-    pub fn get_ondisk_size() -> usize {
+    pub const fn get_ondisk_size() -> usize {
         core::mem::size_of::<u64>()*11
     }
 
