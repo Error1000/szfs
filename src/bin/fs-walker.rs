@@ -137,7 +137,7 @@ fn main() {
     };
 
     let root_node_zap_data = root_node.dump_zap_contents(&mut vdevs).unwrap();
-    println!("Root directory: {:?}", root_node_zap_data);
+    println!("Root directory data zap: {:?}", root_node_zap_data);
 
     let zap::Value::U64(mut file_node_number) = root_node_zap_data["file.bin"] else {
         panic!("File entry is not a number!");

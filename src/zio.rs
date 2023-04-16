@@ -57,7 +57,14 @@ impl DataVirtualAddress {
    }
 
    pub fn dereference(&self, vdevs: &mut Vdevs, size: usize) -> Result<Vec<u8>, ()> {
-        if self.is_gang { println!("TODO: Implement GANG blocks!"); return Err(()); }
+        if self.is_gang {
+            use crate::ansi_color::*;
+            if cfg!(feature = "debug"){
+                println!("{MAGENTA}TODO{WHITE}: Implement GANG blocks, currentl just retuning error!"); 
+            }
+            return Err(()); 
+        }
+
         if cfg!(feature = "debug"){
             if self.vdev_id != 0 {
                 use crate::ansi_color::*;
@@ -207,6 +214,11 @@ pub fn try_decompress_block(block_data: &[u8], compression_method: CompressionMe
     let data = match compression_method {
         CompressionMethod::Off => Vec::from(block_data),
         CompressionMethod::Lz4 | CompressionMethod::On => {
+            if block_data.len() < 4 {
+                // There has to be at least 4 bytes for the comp_size
+                return Err(());
+            }
+
             let comp_size = u32::from_be_bytes(block_data[0..4].try_into().unwrap());
 
             // Note: comp_size+4 may be equal to block_data.len(), just not greater
@@ -218,7 +230,14 @@ pub fn try_decompress_block(block_data: &[u8], compression_method: CompressionMe
             lz4::lz4_decompress_blocks(&mut block_data[4..comp_size as usize+4].iter().copied())?
         },
         CompressionMethod::Lzjb => lzjb::lzjb_decompress(&mut block_data.iter().copied(), output_size)?,
-        _ => todo!("Implement {:?} compression!", compression_method),
+        _ => {
+            use crate::ansi_color::*;
+            if cfg!(feature = "debug") {
+                println!("{MAGENTA}TODO{WHITE}: {:?} compression is not implemented, returning error", compression_method);
+            }
+
+            return Err(());
+        },
     };
     Ok(data)
 }
@@ -353,7 +372,14 @@ impl NormalBlockPointer {
             let computed_checksum = match self.checksum_method {
                 ChecksumMethod::Fletcher4 | ChecksumMethod::On => fletcher::do_fletcher4(&data),
                 ChecksumMethod::Fletcher2 => fletcher::do_fletcher2(&data),
-                _ => todo!("Implement {:?} checksum!", self.checksum_method),
+                _ => {
+                    use crate::ansi_color::*;
+                    if cfg!(feature = "debug"){
+                        println!("{MAGENTA}TODO{WHITE}: {:?} checksum is not implemented, ignoring!", self.checksum_method)
+                    }
+
+                    continue;
+                },
             };
 
             if computed_checksum != self.checksum {

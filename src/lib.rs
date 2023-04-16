@@ -21,6 +21,7 @@ pub mod ansi_color {
     pub const YELLOW: &str = "\u{001b}[33m";
     pub const CYAN: &str = "\u{001b}[36m";
     pub const WHITE: &str = "\u{001b}[0m";
+    pub const MAGENTA: &str = "\u{001b}[35m";
 }
 
 // TODO:
@@ -34,7 +35,7 @@ pub mod ansi_color {
 // 8. Make sure we support sector sizes bigger than 512 bytes
 // 9. Test RAIDZ writing, and in general implement writing
 // 10. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
-
+// 11. Make sure usage of "as" is correct ( probably should use .try_into()? or something similar in some places )
 
 pub struct RaidzInfo {
     ndevices: usize,
