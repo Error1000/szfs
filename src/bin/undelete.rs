@@ -1,14 +1,20 @@
-use std::{collections::HashMap};
+#![feature(map_many_mut)]
+
+use std::{collections::{HashMap, HashSet}, fmt::Debug, hash::{self, Hash}};
 use szfs::{*, zio::{CompressionMethod, Vdevs}, dmu::{DNode, DNodePlainFileContents, DNodeDirectoryContents, ObjSet}};
+
+// NOTE: This code assumes the hash function is perfect
+const hash_function: fn(data: &[u8]) -> [u64; 4] = fletcher::do_fletcher4;
 
 #[derive(Debug)]
 struct IndirectBlock {
-    bps: Vec<zio::BlockPointer>
+    pub bps: Vec<Option<zio::BlockPointer>>
 }
 
 impl IndirectBlock {
     pub fn from_bytes_le(data: &[u8], vdevs: &mut Vdevs) -> Option<IndirectBlock> {
-        let mut res = Vec::<zio::BlockPointer>::new();
+        let mut res = Vec::new();
+        let mut nfound = 0;
         let data = data.chunks(zio::BlockPointer::get_ondisk_size());
         for potential_bp in data {
             if let Some(mut bp) = zio::BlockPointer::from_bytes_le(&mut potential_bp.iter().copied()) {
@@ -17,25 +23,183 @@ impl IndirectBlock {
                 // wasn't just misinterpreted random data, especially if
                 // it is an embedded block pointer
                 if bp.dereference(vdevs).is_ok() {
-                    res.push(bp);
+                    res.push(Some(bp));
+                    nfound += 1;
+                }else{
+                    res.push(None);
                 }
             } else {
+                res.push(None);
                 continue;
             }
         }
+        
+        if nfound == 0 { return None; }
 
         Some(IndirectBlock { bps: res })
     }
+
+    // Assumes that all block pointers point to blocks of the same size
+    // Will replace a missing block with a chunk of zeros, of the same size as all other blocks
+    pub fn get_data_with_gaps(&mut self, vdevs: &mut Vdevs) -> Option<Vec<u8>> {
+        let mut res = Vec::new();
+        let block_pointer_chunck_size = self.bps.iter_mut().filter(|bp| bp.is_some()).next().unwrap().as_mut().unwrap().parse_logical_size();
+        for bp in self.bps.iter_mut() {
+            if let Some(ref mut bp) = bp {
+                if block_pointer_chunck_size != bp.parse_logical_size() {
+                    return None;
+                }
+                res.extend(bp.dereference(vdevs).unwrap());
+            }else{
+                for _ in 0..block_pointer_chunck_size {
+                    res.push(0u8);
+                }
+            }
+        }
+        Some(res)
+    }
 }
 
-#[derive(Debug)]
-enum Fragment {
+enum FragmentData {
     FileDNode(DNodePlainFileContents),
-    DirectoryDNode(DNodeDirectoryContents),
+    DirectoryDNode(DNodeDirectoryContents, Vec<String>),
     ObjSetDNode(ObjSet),
     IndirectBlock(IndirectBlock)
 }
 
+impl Debug for FragmentData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FragmentData::FileDNode(_) => write!(f, "File"),
+            FragmentData::DirectoryDNode(_, _) => write!(f, "Dir"),
+            FragmentData::ObjSetDNode(_) => write!(f, "ObjSet"),
+            FragmentData::IndirectBlock(_) => write!(f, "Indirect"),
+        }?;
+
+        Ok(())
+    }
+}
+
+
+struct Fragment {
+    data: FragmentData,
+    children: HashSet<[u64; 4]>
+}
+
+impl Debug for Fragment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.data)?;
+        write!(f, "(")?;
+        for child in self.children.iter() {
+            write!(f, "{:?}, ", child[0])?;
+        }
+        write!(f, ")")?;
+        Ok(())
+    }
+}
+
+
+impl Fragment {
+    pub fn is_child_of(&mut self, vdevs: &mut Vdevs, self_hash: [u64; 4], potential_parent: &mut Fragment) -> bool {
+        if potential_parent.children.contains(&self_hash) { return true; }
+
+        match (&mut potential_parent.data, &mut self.data) {
+            (FragmentData::IndirectBlock(parent), FragmentData::IndirectBlock(_us)) => {
+                for bptr in parent.bps.iter_mut() {
+                    if let Some(Ok(data)) = bptr.as_mut().map(|val|val.dereference(vdevs)) {
+                        let hsh = hash_function(&data);
+                        if hsh == self_hash {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            },
+
+            (FragmentData::IndirectBlock(parent), FragmentData::FileDNode(_)) |
+            (FragmentData::IndirectBlock(parent), FragmentData::DirectoryDNode(_, _)) => {
+                // Since indirect blocks have sizes that are multiples of 512 this is fine
+                let Some(parent_data) = parent.get_data_with_gaps(vdevs) else {
+                    return false;
+                };
+
+                return search_le_bytes_for_dnodes(&parent_data, vdevs).iter().any(|(hash, _)| *hash == self_hash);
+            },
+
+
+            (FragmentData::ObjSetDNode(parent), FragmentData::IndirectBlock(_us)) => {
+                for bptr in parent.metadnode.get_block_pointers().iter_mut() {
+                    if let Ok(data) = bptr.dereference(vdevs) {
+                        let hsh = hash_function(&data);
+                        if hsh == self_hash {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            },
+
+            (FragmentData::DirectoryDNode(parent, _), FragmentData::IndirectBlock(_us)) => {
+                for bptr in parent.0.get_block_pointers().iter_mut() {
+                    if let Ok(data) = bptr.dereference(vdevs) {
+                        let hsh = hash_function(&data);
+                        if hsh == self_hash {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            },
+
+
+            (FragmentData::FileDNode(parent), FragmentData::IndirectBlock(_us)) => {
+                for bptr in parent.0.get_block_pointers().iter_mut() {
+                    if let Ok(data) = bptr.dereference(vdevs) {
+                        let hsh = hash_function(&data);
+                        if hsh == self_hash {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            },
+
+            // We won't deal with recreating the directory structure
+            (FragmentData::DirectoryDNode(_, _), FragmentData::FileDNode(_us)) => { return false; },
+            (FragmentData::DirectoryDNode(_, _), FragmentData::DirectoryDNode(_us, _)) => { return false; },
+
+
+            // The objset owns the indirect blocks which in turn own the file and directory dnoes
+            // So the objset doesn't need to directly own these types of fragments
+            (FragmentData::ObjSetDNode(_), FragmentData::FileDNode(_us)) => { return false; },
+            (FragmentData::ObjSetDNode(_), FragmentData::DirectoryDNode(_us, _)) => { return false; },
+
+            
+            // A file can't have other file or directory children
+            (FragmentData::FileDNode(_), FragmentData::FileDNode(_us)) => { return false; }
+            (FragmentData::FileDNode(_), FragmentData::DirectoryDNode(_us, _)) => { return false; }
+
+
+            // Objsets don't have parents
+            (FragmentData::DirectoryDNode(_, _), FragmentData::ObjSetDNode(_us)) |
+            (FragmentData::FileDNode(_), FragmentData::ObjSetDNode(_us)) |
+            (FragmentData::ObjSetDNode(_), FragmentData::ObjSetDNode(_us)) |
+            (FragmentData::IndirectBlock(_), FragmentData::ObjSetDNode(_us)) => {
+                return false;
+            },
+        }
+    }
+}
+
+impl From<FragmentData> for Fragment {
+    fn from(frag: FragmentData) -> Self {
+        Self { data: frag, children: HashSet::new() }
+    }
+}
 
 // Note: 'data' must be from a 512-byte aligned offset of the original device
 //       This is because of an optimization taking advantage of the fact that dva offsets are always multiples of 512 and a dnode "slot" is 512 bytes in size in the Objset
@@ -44,8 +208,8 @@ enum Fragment {
 // As you can see SPA_MINBLOCKSHIFT is 9 and the macro shifts by 9
 // Thus proving that the current code is shifting the offset read from disk by 9
 // thus meaning that all DVA offsets are multiples of 512
-fn search_le_bytes_for_dnodes(data: &[u8], vdevs: &mut Vdevs) -> Vec<Fragment> {
-    let mut res = Vec::<Fragment>::new();
+fn search_le_bytes_for_dnodes(data: &[u8], vdevs: &mut Vdevs) -> HashMap<[u64; 4], Fragment> {
+    let mut res = HashMap::<[u64; 4], Fragment>::new();
     let mut data = data.chunks(512);
     while let Some(sector) = data.next() {
         // Try to parse objset
@@ -55,10 +219,12 @@ fn search_le_bytes_for_dnodes(data: &[u8], vdevs: &mut Vdevs) -> Vec<Fragment> {
             objset_data.extend(extra_sector);
         }
 
+        let objset_data_hash = hash_function(&objset_data);
+
         // Note: This tries to parse it even if we don't have enough data, for a data recovery tool this seems like the better option
         if let Some(mut objset) = dmu::ObjSet::from_bytes_le(&mut objset_data.iter().copied()) {
             if objset.metadnode.get_block_pointers().iter_mut().any(|bp|bp.dereference(vdevs).is_ok()){
-                res.push(Fragment::ObjSetDNode(objset));
+                res.insert(objset_data_hash, FragmentData::ObjSetDNode(objset).into());
             }
         };
         
@@ -82,17 +248,21 @@ fn search_le_bytes_for_dnodes(data: &[u8], vdevs: &mut Vdevs) -> Vec<Fragment> {
             }
         }
 
+        let dnode_data_hash = hash_function(&dnode_data);
         // Note: This tries to parse it even if we don't have enough data, for a data recovery tool this seems like the better option
         let dnode = dmu::DNode::from_bytes_le(&mut dnode_data.into_iter());
         match dnode {
             Some(DNode::PlainFileContents(mut dnode)) => {
                 if dnode.0.get_block_pointers().iter_mut().any(|bp| bp.dereference(vdevs).is_ok()) {
-                    res.push(Fragment::FileDNode(dnode))
+                    res.insert(dnode_data_hash, FragmentData::FileDNode(dnode).into());
                 }
             },
             Some(DNode::DirectoryContents(mut dnode)) => {
                 if dnode.0.get_block_pointers().iter_mut().any(|bp| bp.dereference(vdevs).is_ok()) {
-                    res.push(Fragment::DirectoryDNode(dnode))
+                    let Some(contents) = dnode.dump_zap_contents(vdevs) else { continue; };
+                    let contents = contents.iter().map(|(name, _)| name).cloned().collect::<Vec<String>>();
+
+                    res.insert(dnode_data_hash, FragmentData::DirectoryDNode(dnode, contents).into());
                 }
             },
             _ => ()
@@ -102,6 +272,141 @@ fn search_le_bytes_for_dnodes(data: &[u8], vdevs: &mut Vdevs) -> Vec<Fragment> {
     res
 }
 
+
+// Returns: The roots of the graph
+fn build_graph(nodes: &mut HashMap<[u64; 4], Fragment>, vdevs: &mut Vdevs) -> HashSet<[u64; 4]> {
+    // This is because we can't do nested mutable loops due to the borrow checker
+    // So instead we are going to collect all keys in a vector
+    // and then loop over indices in the keys vector 
+    // Yes this is not optimal in terms of memory usage
+    // But even with a million fragments
+    // This is still only 32 mb of temporary memory
+    let hashes = nodes.iter().map(|(hash, _)| *hash).collect::<Vec<[u64; 4]>>();
+    let mut roots: HashSet<[u64; 4]> = hashes.iter().copied().collect::<_>();
+
+    for i in 0..hashes.len() {
+        let hash1 = hashes[i];
+        println!("Figuring out children of node {}/{}, with hash: {:?}", i+1, hashes.len(), hash1);
+
+        // Figure out the children of the fragment at the key at index i by going through all other fragments and checking if they are children of this fragment
+        for j in 0..hashes.len() {
+            if i == j { continue; }
+            let hash2 = hashes[j];
+            let [frag1, frag2] = nodes.get_many_mut([&hash1, &hash2]).unwrap();
+            if frag2.is_child_of(vdevs, hash2, frag1) {
+                frag1.children.insert(hash2);
+                roots.remove(&hash2);// frag2 has a parent of frag1 so it's not a root
+            }
+        }
+    }
+
+    roots
+}
+
+// Returns fragments contained within the fragment to expand
+fn expand_fragment(fragment_to_expand: &mut Fragment, vdevs: &mut Vdevs) -> Option<HashMap<[u64; 4], Fragment>> {
+    let mut subfragments = HashMap::<[u64; 4], Fragment>::new(); 
+    match &mut fragment_to_expand.data {
+        FragmentData::FileDNode(file) => {
+            for bp in file.0.get_block_pointers() {
+                if let Ok(data) = bp.dereference(vdevs) {
+                    if let Some(indirect_block) = IndirectBlock::from_bytes_le(&data, vdevs) {
+                        let hsh = hash_function(&data);
+                        subfragments.insert(hsh, FragmentData::IndirectBlock(indirect_block).into());
+                    }
+                }
+            }
+        },
+
+        FragmentData::DirectoryDNode(dir, _) => {
+            for bp in dir.0.get_block_pointers() {
+                if let Ok(data) = bp.dereference(vdevs) {
+                    if let Some(indirect_block) = IndirectBlock::from_bytes_le(&data, vdevs) {
+                        let hsh = hash_function(&data);
+                        subfragments.insert(hsh, FragmentData::IndirectBlock(indirect_block).into());
+                    }
+                }
+            }
+        },
+
+        FragmentData::ObjSetDNode(objset) => {
+            for bp in objset.metadnode.get_block_pointers() {
+                if let Ok(data) = bp.dereference(vdevs) {
+                    if let Some(indirect_block) = IndirectBlock::from_bytes_le(&data, vdevs) {
+                        let hsh = hash_function(&data);
+                        subfragments.insert(hsh, FragmentData::IndirectBlock(indirect_block).into());
+                    }
+                }
+            }
+        },
+
+        FragmentData::IndirectBlock(indir) => {
+            for bptr in indir.bps.iter_mut() {
+                if let Some(Ok(data)) = bptr.as_mut().map(|val|val.dereference(vdevs)) {
+                    if let Some(indirect_block) = IndirectBlock::from_bytes_le(&data, vdevs) {
+                        let hsh = hash_function(&data);
+                        subfragments.insert(hsh, FragmentData::IndirectBlock(indirect_block).into());
+                    }
+                }
+            }
+
+            if let Some(data) = indir.get_data_with_gaps(vdevs) {
+                subfragments.extend(search_le_bytes_for_dnodes(&data, vdevs));
+            }
+        },
+    }
+
+    let mut subsubfragments = HashMap::<_, _>::new();
+    if subfragments.len() != 0 {
+        for (_, subfrag) in subfragments.iter_mut() {
+            if let Some(res) = expand_fragment(subfrag, vdevs) {
+                subsubfragments.extend(res);
+            }
+        }
+    }
+    subfragments.extend(subsubfragments);
+
+    Some(subfragments)
+}
+
+fn dump_graph_to_stdout(fragments: &mut HashMap<[u64; 4], Fragment>) {
+    println!("!!!Begin dump!!");
+    let mut hashes_to_info = HashMap::<[u64; 4], String>::new();
+    let mut current_index = 0;
+
+    println!("Dumping id to hash mapping ...");
+    for (hash, frag) in fragments.iter() {
+        match &frag.data {
+            FragmentData::DirectoryDNode(_, contents) => {
+                let mut dir_contents_str = String::new();
+                for file in contents {
+                    dir_contents_str += file;
+                    dir_contents_str += ", ";
+                }
+                dir_contents_str.pop();
+                dir_contents_str.pop();
+
+                println!("\"{:?}{}({})\" -> {:?}", frag.data, current_index, dir_contents_str, hash);
+                hashes_to_info.insert(*hash, format!("{:?}{}({})", frag.data, current_index, dir_contents_str));        
+            }
+            _ => {
+                println!("\"{:?}{}\" -> {:?}", frag.data, current_index, hash);
+                hashes_to_info.insert(*hash, format!("{:?}{}", frag.data, current_index));
+            }
+        }
+        current_index += 1;
+    }
+    println!("Dumping graph using ids ...");
+    for (hash, fragment) in fragments.iter() {
+        for child_hash in fragment.children.iter() {
+            println!("\"{}\" -> \"{}\"", hashes_to_info[hash], hashes_to_info[child_hash]);
+        }
+
+        if fragment.children.len() == 0 {
+            println!("\"{}\"", hashes_to_info[hash]);
+        }
+    }
+}
 
 fn main() {
     use szfs::ansi_color::*;
@@ -150,7 +455,7 @@ fn main() {
         panic!("no txg found in label!");
     };
 
-    println!("{CYAN}Info{WHITE}: Parsed nv_list, {:?}!", name_value_pairs);
+    println!("{CYAN}Info{WHITE}: Parsed nv_list, {name_value_pairs:?}!");
 
 
     let mut devices = Vdevs::new();
@@ -169,13 +474,16 @@ fn main() {
 
 
     let compression_methods_and_sizes_to_try = 
-        [(CompressionMethod::Lz4, [512], [0]/* irrelevant for lz4 */)];
+        [(CompressionMethod::Lz4, [512*1, 512*2, 512*3, 512*4], [0]/* irrelevant for lz4 */)];
 
     // Gather basic fragments
-    let mut recovered_fragments = Vec::<Fragment>::new();
-    for off in (0..disk_size-512*2).step_by(512) {
+    let mut recovered_fragments = HashMap::<[u64; 4], Fragment>::new();
+
+    println!("Step 1. Gathering basic fragments");
+
+    for off in (0..disk_size).step_by(512) {
         if off % (512*100_000) == 0 {
-            println!("{}% done recovering fragments ...", ((off as f32)/(disk_size as f32))*100.0);
+            println!("{}% done gathering basic fragments ...", ((off as f32)/(disk_size as f32))*100.0);
         }
 
         // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
@@ -194,11 +502,19 @@ fn main() {
                         continue;
                     };
 
+                    // Note: order is sort of important here
+                    // because some blocks that are actually objsets might get misinterpreted
+                    // as indirect blocks that only contain 3 block pointers
+                    // but because we do the objset interpretation last
+                    // if it succeeds it can override the bad indirect block interpretation by having the same hash
+                    
+                    let indirect_block_data_hash = hash_function(&decomp_data);
+                    if let Some(res) = IndirectBlock::from_bytes_le(&decomp_data, &mut vdevs) {
+                        recovered_fragments.insert(indirect_block_data_hash, FragmentData::IndirectBlock(res).into());
+                    }
+
                     let res = search_le_bytes_for_dnodes(&decomp_data, &mut vdevs);
                     recovered_fragments.extend(res);
-                    if let Some(res) = IndirectBlock::from_bytes_le(&decomp_data, &mut vdevs) {
-                        recovered_fragments.push(Fragment::IndirectBlock(res));
-                    }
                 }
             }
         }
@@ -206,12 +522,22 @@ fn main() {
     }
 
     println!("Found {} basic fragments", recovered_fragments.len());
-    for fragment in recovered_fragments {
-        match fragment {
-            Fragment::FileDNode(_) => print!("FileDNode "),
-            Fragment::DirectoryDNode(_) => print!("DirectoryDNode "),
-            Fragment::ObjSetDNode(_) => print!("ObjSetDNode "),
-            Fragment::IndirectBlock(_) => print!("IndirectBlock "),
+
+    println!("Step 2. Building graph");
+
+    let roots = build_graph(&mut recovered_fragments, &mut vdevs);
+
+    println!("Step 3. Expanding root fragments");
+    
+    for root_frag_hash in roots {
+        println!("Expanding fragment {:?}", root_frag_hash);
+        if let Some(res) = expand_fragment(recovered_fragments.get_mut(&root_frag_hash).unwrap(), &mut vdevs) {
+            recovered_fragments.extend(res);
         }
     }
+
+    println!("Step 4. Rebuilding graph");
+    let _roots = build_graph(&mut recovered_fragments, &mut vdevs);
+    
+    dump_graph_to_stdout(&mut recovered_fragments);
 }
