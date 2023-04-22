@@ -147,7 +147,7 @@ pub fn from_bytes_xdr(data: &mut impl Iterator<Item = u8>) -> Option<NVList> {
     // first byte is the encoding, second byte is the endianness, and the last two are reserved
     let xdr_encoding = data.next()?; 
     let xdr_endian = data.next()?;
-    data.skip_n_bytes(2); // Consume reserved bytes
+    data.skip_n_bytes(2)?; // Consume reserved bytes
     // println!("NVList xdr encoding: {}, xdr endianness: {}", xdr_encoding, xdr_endian);
     if xdr_endian != 1 || xdr_encoding != 1 { 
         println!("Expected xdr encoding 1, and endian 1 (a.k.a big-endian)!");

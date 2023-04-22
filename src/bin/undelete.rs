@@ -1,6 +1,6 @@
 #![feature(map_many_mut)]
 
-use std::{collections::{HashMap, HashSet}, fmt::Debug, hash::{self, Hash}};
+use std::{collections::{HashMap, HashSet}, fmt::Debug, fs::OpenOptions, io::Write};
 use szfs::{*, zio::{CompressionMethod, Vdevs}, dmu::{DNode, DNodePlainFileContents, DNodeDirectoryContents, ObjSet}};
 
 // NOTE: This code assumes the hash function is perfect
@@ -173,7 +173,7 @@ impl Fragment {
             (FragmentData::DirectoryDNode(_, _), FragmentData::DirectoryDNode(_us, _)) => { return false; },
 
 
-            // The objset owns the indirect blocks which in turn own the file and directory dnoes
+            // The objset owns the indirect blocks which in turn own the file and directory dnodes
             // So the objset doesn't need to directly own these types of fragments
             (FragmentData::ObjSetDNode(_), FragmentData::FileDNode(_us)) => { return false; },
             (FragmentData::ObjSetDNode(_), FragmentData::DirectoryDNode(_us, _)) => { return false; },
@@ -313,6 +313,7 @@ fn expand_fragment(fragment_to_expand: &mut Fragment, vdevs: &mut Vdevs) -> Opti
                     if let Some(indirect_block) = IndirectBlock::from_bytes_le(&data, vdevs) {
                         let hsh = hash_function(&data);
                         subfragments.insert(hsh, FragmentData::IndirectBlock(indirect_block).into());
+                        fragment_to_expand.children.insert(hsh);
                     }
                 }
             }
@@ -324,6 +325,7 @@ fn expand_fragment(fragment_to_expand: &mut Fragment, vdevs: &mut Vdevs) -> Opti
                     if let Some(indirect_block) = IndirectBlock::from_bytes_le(&data, vdevs) {
                         let hsh = hash_function(&data);
                         subfragments.insert(hsh, FragmentData::IndirectBlock(indirect_block).into());
+                        fragment_to_expand.children.insert(hsh);
                     }
                 }
             }
@@ -335,6 +337,7 @@ fn expand_fragment(fragment_to_expand: &mut Fragment, vdevs: &mut Vdevs) -> Opti
                     if let Some(indirect_block) = IndirectBlock::from_bytes_le(&data, vdevs) {
                         let hsh = hash_function(&data);
                         subfragments.insert(hsh, FragmentData::IndirectBlock(indirect_block).into());
+                        fragment_to_expand.children.insert(hsh);
                     }
                 }
             }
@@ -346,6 +349,7 @@ fn expand_fragment(fragment_to_expand: &mut Fragment, vdevs: &mut Vdevs) -> Opti
                     if let Some(indirect_block) = IndirectBlock::from_bytes_le(&data, vdevs) {
                         let hsh = hash_function(&data);
                         subfragments.insert(hsh, FragmentData::IndirectBlock(indirect_block).into());
+                        fragment_to_expand.children.insert(hsh);
                     }
                 }
             }
@@ -464,7 +468,7 @@ fn main() {
     devices.insert(2, &mut vdev2);
     devices.insert(3, &mut vdev3);
 
-    let mut vdev_raidz: VdevRaidz = VdevRaidz::from_vdevs(devices, 1, 2_usize.pow(top_level_ashift as u32));
+    let mut vdev_raidz: VdevRaidz = VdevRaidz::from_vdevs(devices, 4, 1, 2_usize.pow(top_level_ashift as u32));
 
     label0.set_raw_uberblock_size(2_usize.pow(top_level_ashift as u32));
 
@@ -540,4 +544,55 @@ fn main() {
     let _roots = build_graph(&mut recovered_fragments, &mut vdevs);
     
     dump_graph_to_stdout(&mut recovered_fragments);
+    let mut input_line = String::new();
+    let mut recovered_file_number = 0;
+    loop {
+        std::io::stdout().flush().unwrap();
+        print!("Please enter hash of node to dump: ");
+        std::io::stdout().flush().unwrap();
+        input_line.clear();
+        std::io::stdin().read_line(&mut input_line).expect("Reading a line should work!");
+        let Ok(hsh) = parse_hsh_from_str(&input_line) else {
+            println!("Couldn't parse hash!");
+            continue;
+        };
+
+        let Some(frag) = recovered_fragments.get_mut(&hsh) else {
+            println!("No fragment with that hash exists!");
+            continue;
+        };
+
+        match &mut frag.data {
+            FragmentData::FileDNode(file) => {
+                let mut output_file = OpenOptions::new().write(true).create(true).open(format!("recovered-file{}.bin", recovered_file_number)).unwrap();
+                for block_id in 0..file.0.get_data_size()/file.0.parse_data_block_size() {
+                    if let Ok(block_data) = file.0.read_block(block_id, &mut vdevs) {
+                        output_file.write_all(&block_data).unwrap();
+                    } else {
+                        // Just write 0s
+                        output_file.write_all(&vec![0u8; file.0.parse_data_block_size()]).unwrap();
+                    }
+                }
+                recovered_file_number += 1;
+            },
+
+            FragmentData::DirectoryDNode(_, _) => todo!(),
+            FragmentData::ObjSetDNode(_) => todo!(),
+            FragmentData::IndirectBlock(_) => todo!(),
+        }
+    }
+}
+
+fn parse_hsh_from_str(s: &str) -> Result<[u64; 4], ()> {
+    let mut res = [0u64; 4];
+    for (index, part) in s.trim().split(',').map(|s|s.trim()).enumerate().map(|(index, s)| {
+        match index {
+            0 => &s[1..], // remove the beginning [
+            3 => &s[..s.len()-1], // remove the ending ],
+            _ => s,
+        }
+    }).enumerate() {
+        res[index] = part.parse::<u64>().map_err(|_|())?;
+    }
+    Ok(res)
 }

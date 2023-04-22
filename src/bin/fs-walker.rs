@@ -57,7 +57,7 @@ fn main() {
     devices.insert(2, &mut vdev2);
     devices.insert(3, &mut vdev3);
 
-    let mut vdev_raidz: VdevRaidz = VdevRaidz::from_vdevs(devices, 1, 2_usize.pow(top_level_ashift as u32));
+    let mut vdev_raidz: VdevRaidz = VdevRaidz::from_vdevs(devices, 4, 1, 2_usize.pow(top_level_ashift as u32));
 
     label0.set_raw_uberblock_size(2_usize.pow(top_level_ashift as u32));
 

@@ -364,8 +364,10 @@ impl NormalBlockPointer {
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
         for dva in self.dvas.iter().filter_map(|val| val.as_ref()) {
             let Ok(data) = dva.dereference(vdevs, self.parse_physical_size() as usize) else { 
-                use crate::ansi_color::*;
-                println!("{YELLOW}Warning{WHITE}: Invalid dva {:?}", dva);
+                if cfg!(feature = "debug") {
+                    use crate::ansi_color::*;
+                    println!("{YELLOW}Warning{WHITE}: Invalid dva {:?}", dva);
+                }
                 continue; 
             };
 
@@ -411,8 +413,8 @@ impl NormalBlockPointer {
         if cfg!(feature = "debug") {
             use crate::ansi_color::*;
             println!("{YELLOW}Warning{WHITE}: Failed to dereference block pointer: {:?}.", self);
-
         }
+        
         return Err(());
     }
 }

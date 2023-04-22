@@ -473,7 +473,7 @@ impl ZapHeader {
             ZapHeader::MicroZap => {
                 let data = parent_dnode.read_block(0, vdevs).ok()?;
                 let mut data = data.iter().copied();
-                data.skip_n_bytes(64);
+                data.skip_n_bytes(64)?;
                 let nentries = (parent_dnode.parse_data_block_size()-64)/MicroZapEntry::get_ondisk_size();
                 for _ in 0..nentries {
                     let entry = MicroZapEntry::from_bytes_le(&mut data)?;

@@ -47,7 +47,10 @@ pub trait Vdev {
     // NOTE: Read and write ignore the labels and the boot block
     // A.k.a for a normal vdev the offset is relative to the end of the boot block instead
     // of the beginning of the vdev
+    #[must_use]
     fn read(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()>;
+
+    #[must_use]
     fn write(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()>;
 
     fn read_raw_label(&mut self, label_index: usize) -> Result<Vec<u8>, ()>;
@@ -63,6 +66,7 @@ pub struct VdevFile {
 }
 
 impl VdevFile {
+    #[must_use]
     pub fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
         let mut buf = vec![0u8; amount_in_bytes];
         self.device.seek(SeekFrom::Start(offset_in_bytes)).map_err(|_| ())?;
@@ -70,6 +74,7 @@ impl VdevFile {
         Ok(buf)
     }
 
+    #[must_use]
     pub fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()> {
         self.device.seek(SeekFrom::Start(offset_in_bytes)).map_err(|_| ())?;
         self.device.write(data).map_err(|_| ())?;
@@ -151,9 +156,9 @@ pub struct VdevRaidz<'a> {
 }
 
 impl<'a> VdevRaidz<'a> {
-    pub fn from_vdevs(devices: Vdevs<'a>, nparity: usize, asize: usize) -> VdevRaidz {
-        let ndevices = devices.iter().max_by_key(|(k, _)| k.clone()).unwrap().0.clone()+1;
-        let size = devices.iter().fold(0, |old, (_, v)| old + v.get_size());
+    pub fn from_vdevs(devices: Vdevs<'a>, ndevices: usize, nparity: usize, asize: usize) -> VdevRaidz {
+        let device_size = devices.iter().map(|dev| dev.1.get_size()).min().unwrap();
+        let size = device_size*(ndevices as u64);
         VdevRaidz { 
             devices, 
             size, 
@@ -163,6 +168,7 @@ impl<'a> VdevRaidz<'a> {
         }
     }
     
+    #[must_use]
     pub fn read_sector(&mut self, sector_index: u64) -> Result<Vec<u8>, ()> {
         let device_sector_index = sector_index/(self.ndevices as u64);
         let device_number = (sector_index%(self.ndevices as u64)) as usize;
@@ -173,6 +179,7 @@ impl<'a> VdevRaidz<'a> {
         .read(device_sector_index*(asize as u64), asize)
     }
 
+    #[must_use]
     pub fn write_sector(&mut self, sector_index: u64, data: &[u8]) -> Result<(), ()> {
         let device_sector_index = sector_index/(self.ndevices as u64);
         let device_number = (sector_index%(self.ndevices as u64)) as usize;
