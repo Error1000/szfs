@@ -1,7 +1,9 @@
+use serde::{Serialize, Deserialize};
+
 use crate::{zio::{self, ChecksumMethod, CompressionMethod, BlockPointer, Vdevs}, byte_iter::ByteIter, zil::ZilHeader, zap, dsl};
 use std::{fmt::Debug, collections::HashMap};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjType {
     None = 0,
     ObjectDirectory = 1,
@@ -125,7 +127,7 @@ impl ObjType {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BonusType {
     None = 0,
     PackedNVListSize = 4,
@@ -159,6 +161,7 @@ mod dnode_flag {
 
 
 // General dnode data, not specific to any type of dnode
+#[derive(Serialize, Deserialize)]
 pub struct DNodeBase {
     indirect_blocksize_log2: u8,
     n_indirect_levels: u8,
@@ -474,7 +477,7 @@ impl ZapDNode {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DNodeDirectoryContents(pub DNodeBase, pub BonusType);
 
 impl DNodeDirectoryContents {
@@ -489,7 +492,7 @@ impl DNodeDirectoryContents {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DNodePlainFileContents(pub DNodeBase, pub BonusType);
 
 
@@ -549,7 +552,7 @@ impl DNode {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObjSetType {
     None = 0,
     Meta = 1,
@@ -569,7 +572,7 @@ impl ObjSetType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ObjSet {
     pub metadnode: DNodeBase,
     pub zil: Option<ZilHeader>,

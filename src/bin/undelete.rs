@@ -1,12 +1,13 @@
 #![feature(map_many_mut)]
 
 use std::{collections::{HashMap, HashSet}, fmt::Debug, fs::OpenOptions, io::Write};
+use serde::{Serialize, Deserialize};
 use szfs::{*, zio::{CompressionMethod, Vdevs}, dmu::{DNode, DNodePlainFileContents, DNodeDirectoryContents, ObjSet}};
 
 // NOTE: This code assumes the hash function is perfect
 const hash_function: fn(data: &[u8]) -> [u64; 4] = fletcher::do_fletcher4;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct IndirectBlock {
     pub bps: Vec<Option<zio::BlockPointer>>
 }
@@ -60,6 +61,7 @@ impl IndirectBlock {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 enum FragmentData {
     FileDNode(DNodePlainFileContents),
     DirectoryDNode(DNodeDirectoryContents, Vec<String>),
@@ -81,6 +83,7 @@ impl Debug for FragmentData {
 }
 
 
+#[derive(Serialize, Deserialize)]
 struct Fragment {
     data: FragmentData,
     children: HashSet<[u64; 4]>
@@ -210,7 +213,14 @@ impl From<FragmentData> for Fragment {
 // thus meaning that all DVA offsets are multiples of 512
 fn search_le_bytes_for_dnodes(data: &[u8], vdevs: &mut Vdevs) -> HashMap<[u64; 4], Fragment> {
     let mut res = HashMap::<[u64; 4], Fragment>::new();
-    let mut data = data.chunks(512);
+    if data.len()%512 != 0 {
+        if cfg!(feature = "debug"){
+            use crate::ansi_color::*;
+            println!("{YELLOW}Warning{WHITE}: Can't search data that is not a multiple of 512 bytes in size, ignoring extra bytes!");
+        }
+    }
+
+    let mut data = data.chunks_exact(512);
     while let Some(sector) = data.next() {
         // Try to parse objset
         let mut objset_data = Vec::<u8>::new();
@@ -414,7 +424,7 @@ fn dump_graph_to_stdout(fragments: &mut HashMap<[u64; 4], Fragment>) {
 
 fn main() {
     use szfs::ansi_color::*;
-
+    
     let Ok(vdev0) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev0.bin")
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev0!");
@@ -476,12 +486,13 @@ fn main() {
     let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
     vdevs.insert(0usize, &mut vdev_raidz);
 
-
+    // The sizes are just the most common sizes i have seen while looking at the sizes of compressed indirect blocks, and also 512
     let compression_methods_and_sizes_to_try = 
-        [(CompressionMethod::Lz4, [512*1, 512*2, 512*3, 512*4], [0]/* irrelevant for lz4 */)];
+        [(CompressionMethod::Lz4, [512*1, 512*2, 512*3, 512*21], [0]/* irrelevant for lz4 */)];
 
-    // Gather basic fragments
+    // This is the main graph
     let mut recovered_fragments = HashMap::<[u64; 4], Fragment>::new();
+
 
     println!("Step 1. Gathering basic fragments");
 
@@ -527,9 +538,16 @@ fn main() {
 
     println!("Found {} basic fragments", recovered_fragments.len());
 
+    println!("Saving checkpoint 1 ...");
+    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint1.json").unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+    
     println!("Step 2. Building graph");
 
     let roots = build_graph(&mut recovered_fragments, &mut vdevs);
+
+    println!("Saving checkpoint 2 ...");
+    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint2.json").unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint2-appendix-roots.json").unwrap(), "{}", &serde_json::to_string(&roots).unwrap()).unwrap();
 
     println!("Step 3. Expanding root fragments");
     
@@ -540,9 +558,15 @@ fn main() {
         }
     }
 
+    println!("Saving checkpoint 3 ...");
+    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint3.json").unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+
     println!("Step 4. Rebuilding graph");
     let _roots = build_graph(&mut recovered_fragments, &mut vdevs);
     
+    println!("Saving checkpoint 4 ...");
+    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint4.json").unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+
     dump_graph_to_stdout(&mut recovered_fragments);
     let mut input_line = String::new();
     let mut recovered_file_number = 0;

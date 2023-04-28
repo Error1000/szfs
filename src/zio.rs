@@ -1,7 +1,8 @@
 use std::{fmt::Debug, collections::HashMap};
 use crate::{byte_iter::ByteIter, Vdev, fletcher, lz4, dmu, lzjb};
+use serde::{Deserialize, Serialize};
 
-
+#[derive(Serialize, Deserialize)]
 pub struct DataVirtualAddress {
     vdev_id: u32,
     data_allocated_size_minus_one_in_sectors: u32, // technically a u24
@@ -71,8 +72,13 @@ impl DataVirtualAddress {
                 println!("{YELLOW}Warning{WHITE}: DVA has invalid vdev id {}, automatically correcting!", self.vdev_id);
             }
         }
-        
+
         let Some(vdev) = vdevs.get_mut(&0) else { return Err(()); };
+
+        // TODO: This shouldn't need to be here once we can properly bubble up the out of bounds error from lower layers
+        // This is only here for the undelete program so that a dva interpreted from bad data won't be noisy
+        if self.parse_offset()+(size as u64) > vdev.get_size() { return Err(()); }
+
         if let Some(raidz_info) = vdev.get_raidz_info() {
             let number_of_data_sectors = if size % vdev.get_asize() == 0 { size/vdev.get_asize() } else { (size/vdev.get_asize())+1};
             let number_of_stripes = if number_of_data_sectors%(raidz_info.ndevices-raidz_info.nparity) == 0 { number_of_data_sectors/(raidz_info.ndevices-raidz_info.nparity) } else { number_of_data_sectors/(raidz_info.ndevices-raidz_info.nparity)+1 };
@@ -121,7 +127,7 @@ impl DataVirtualAddress {
 
 pub type Vdevs<'a> = HashMap<usize, &'a mut dyn Vdev>;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum ChecksumMethod {
     Inherit = 0,
     On = 1, // equivalent to fletcher4 ( https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L122 )
@@ -163,7 +169,7 @@ impl ChecksumMethod {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum CompressionMethod {
     Inherit = 0,
     On = 1, // Equivalent to lz4 (https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L122)
@@ -260,6 +266,7 @@ pub fn try_decompress_block(block_data: &[u8], compression_method: CompressionMe
 // 100 00000 00001011 00000111 0 0001111 0000000000000000 0000000000000111
 // 3   5     8        8        1 7       16	              16
 
+#[derive(Serialize, Deserialize)]
 pub struct NormalBlockPointer {
     dvas: [Option<DataVirtualAddress>; 3],
     level: usize,
@@ -423,6 +430,7 @@ impl NormalBlockPointer {
 
 // Reference: https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L265
 
+#[derive(Serialize, Deserialize)]
 pub struct EmbeddedBlockPointer {
     payload: Vec<u8>,
     logical_birth_txg: u64,
@@ -538,7 +546,7 @@ impl EmbeddedBlockPointer {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum BlockPointer {
     Normal(NormalBlockPointer),
     Embedded(EmbeddedBlockPointer)

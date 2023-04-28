@@ -1,7 +1,9 @@
+use serde::{Serialize, Deserialize};
+
 use crate::zio::BlockPointer;
 use crate::byte_iter::ByteIter;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ZilHeader {
     claim_txg: u64,
     highest_replayed_seq_number: u64,

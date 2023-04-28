@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::{fs::File, io::{SeekFrom, Seek, Read, Write}};
+use std::{fs::File, io::{SeekFrom, Seek, Read, Write}, fmt::Debug};
 
 use byte_iter::ByteIter;
 use zio::Vdevs;
@@ -59,30 +59,74 @@ pub trait Vdev {
     fn get_raidz_info(&self) -> Option<RaidzInfo>;
 }
 
+#[derive(Debug)]
+pub struct VdevDisk {
+    device: File
+}
+
+impl VdevRaw for VdevDisk {
+    fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
+       let mut buf = vec![0u8; amount_in_bytes];
+       self.device.seek(SeekFrom::Start(offset_in_bytes+2048*512)).map_err(|_| ())?;
+       self.device.read(&mut buf).map_err(|_| ())?;
+       Ok(buf)
+   }  
+
+   fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()>{
+    self.device.seek(SeekFrom::Start(offset_in_bytes+2048*512)).map_err(|_| ())?;
+    self.device.write(data).map_err(|_| ())?;
+    Ok(())
+   }
+   
+   fn get_raw_size(&self) -> u64 {
+    self.device
+    .metadata()
+    .expect("File metadata must be availzble so that we can know the file's size!")
+    .len()
+   }
+}
+
 
 #[derive(Debug)]
 pub struct VdevFile {
     device: File,
 }
 
-impl VdevFile {
-    #[must_use]
-    pub fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
-        let mut buf = vec![0u8; amount_in_bytes];
-        self.device.seek(SeekFrom::Start(offset_in_bytes)).map_err(|_| ())?;
-        self.device.read(&mut buf).map_err(|_| ())?;
-        Ok(buf)
-    }
+impl VdevRaw for VdevFile {
+    fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
+       let mut buf = vec![0u8; amount_in_bytes];
+       self.device.seek(SeekFrom::Start(offset_in_bytes)).map_err(|_| ())?;
+       self.device.read(&mut buf).map_err(|_| ())?;
+       Ok(buf)
+   }  
 
-    #[must_use]
-    pub fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()> {
-        self.device.seek(SeekFrom::Start(offset_in_bytes)).map_err(|_| ())?;
-        self.device.write(data).map_err(|_| ())?;
-        Ok(())
-    }
+   fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()>{
+    self.device.seek(SeekFrom::Start(offset_in_bytes)).map_err(|_| ())?;
+    self.device.write(data).map_err(|_| ())?;
+    Ok(())
+   }
+   
+   fn get_raw_size(&self) -> u64 {
+    self.device
+    .metadata()
+    .expect("File metadata must be availzble so that we can know the file's size!")
+    .len()
+   }
 }
 
-impl Vdev for VdevFile {
+trait VdevRaw {
+    #[must_use]
+    fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()>;
+
+    #[must_use]
+    fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()>;
+
+    #[must_use]
+    fn get_raw_size(&self) -> u64;
+}
+
+impl<T> Vdev for T
+where T: VdevRaw + Debug {
     fn get_raidz_info(&self) -> Option<RaidzInfo> {
         None
     }
@@ -93,18 +137,19 @@ impl Vdev for VdevFile {
 
     fn read(&mut self, mut offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
         // 4 mb at the beginning and 2 labels at the end
-        if offset_in_bytes >= self.get_size()+2*256*1024 { 
+        if offset_in_bytes+amount_in_bytes as u64 > self.get_size() { 
             use ansi_color::*;
             println!("{YELLOW}Warning{WHITE}: Offset: {:?} is past the end of device {:?}!", offset_in_bytes, self);
             return Err(()); 
         }
+        
         offset_in_bytes += 4*1024*1024;
         self.read_raw(offset_in_bytes, amount_in_bytes)
     }
 
     fn write(&mut self, mut offset_in_bytes: u64, data: &[u8]) -> Result<(), ()> {
         // 4 mb at the beginning and 2 labels at the end
-        if offset_in_bytes >= self.get_size()+2*256*1024 {
+        if offset_in_bytes+data.len() as u64 > self.get_size() {
             use ansi_color::*;
             println!("{YELLOW}Warning{WHITE}: Offset: {:?} is past the end of device {:?}!", offset_in_bytes, self);
             return Err(()); 
@@ -114,10 +159,7 @@ impl Vdev for VdevFile {
     }
 
     fn get_size(&self) -> u64 {
-        self.device
-        .metadata()
-        .expect("File metadata must be availzble so that we can know the file's size!")
-        .len()
+        self.get_raw_size()
         -4*1024*1024 /* beginning boot block and labels */
         -2*256*1024 /* ending labels */
     }
@@ -140,13 +182,14 @@ impl Vdev for VdevFile {
     }
 }
 
+
 impl From<File> for VdevFile {
     fn from(f: File) -> Self {
         Self { device: f }
     }
 }
 
-
+unsafe impl<'a> Send for VdevRaidz<'a> {}
 pub struct VdevRaidz<'a> {
     devices: Vdevs<'a>,
     size: u64,
