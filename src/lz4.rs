@@ -2,16 +2,16 @@ use crate::byte_iter::ByteIter;
 
 // Warning: The size of input is relevant as the lz4 format may not be able to figure out when the stream ends
 // due to 00 00 00 being a valid block that means copy the last byte 4 times
-pub fn lz4_decompress_blocks(data: &mut impl Iterator<Item = u8>) -> Result<Vec<u8>, ()> {
+pub fn lz4_decompress_blocks(data: &mut impl Iterator<Item = u8>) -> Result<Vec<u8>, Vec<u8>> {
     let mut output_buf = Vec::new();
     loop {
-        let token = data.next().ok_or(())?;
+        let token = data.next().ok_or(output_buf.clone())?;
         let mut literal_size: usize = ((token & 0xF0) >> 4).into();
         let mut lookback_size: usize = ((token & 0x0F) >> 0).into();
         // Handle extended literal sizes
         if literal_size == 0xF {
             loop{
-                let extended_size: usize = data.next().ok_or(())?.into();
+                let extended_size: usize = data.next().ok_or(output_buf.clone())?.into();
                 literal_size += extended_size;
                 if extended_size != 0xFF { break; }
             }
@@ -19,10 +19,10 @@ pub fn lz4_decompress_blocks(data: &mut impl Iterator<Item = u8>) -> Result<Vec<
 
         // Copy literal_size bytes to output_buf
         for _ in 0..literal_size {
-            output_buf.push(data.next().ok_or(())?);
+            output_buf.push(data.next().ok_or(output_buf.clone())?);
         }
 
-        let Ok(lookback) = data.read_u16_le().ok_or(()) else {
+        let Some(lookback) = data.read_u16_le() else {
             if lookback_size == 0 {
                 // Reached end of all lz4 blocks
                 // This is not an error
@@ -30,19 +30,19 @@ pub fn lz4_decompress_blocks(data: &mut impl Iterator<Item = u8>) -> Result<Vec<
             }else{
                 // Stream ended abruptly, since the lookback_size was not 0 this could not have been the last block
                 // so it must have a lookback, but we couldn't read it because the stream ended
-                return Err(());
+                return Err(output_buf);
             }
         };
 
         if lookback as usize > output_buf.len() || lookback == 0 {
             // Invalid lz4 block
-            return Err(());
+            return Err(output_buf);
         }
 
         // Handle extended lookback sizes
         if lookback_size == 0xF {
             loop {
-                let extended_size: usize = data.next().ok_or(())?.into();
+                let extended_size: usize = data.next().ok_or(output_buf.clone())?.into();
                 lookback_size += extended_size;
                 if extended_size != 0xFF { break; }
             }

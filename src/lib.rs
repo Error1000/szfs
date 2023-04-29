@@ -1,7 +1,8 @@
 #![allow(dead_code)]
-use std::{fs::File, io::{SeekFrom, Seek, Read, Write}, fmt::Debug};
+use std::{fs::File, io::{SeekFrom, Seek, Read, Write}, fmt::Debug, collections::HashMap};
 
 use byte_iter::ByteIter;
+use lru::LruCache;
 use zio::Vdevs;
 
 pub mod nvlist;
@@ -195,7 +196,13 @@ pub struct VdevRaidz<'a> {
     size: u64,
     ndevices: usize,
     nparity: usize,
-    asize: usize
+    asize: usize,
+    // This is based on a profiler showing that we hit read_sector heavily and since disk access is slow
+    // and because we tend to access the same sectors multiple times (cache hit rate is ~99% as measured in runtime) in a non-sequential order,
+    // giving this ~1 gigabyte of space seems reasonable
+    cache: LruCache<u64, Vec<u8>>,
+    cache_hits: u64,
+    cache_misses: u64,
 }
 
 impl<'a> VdevRaidz<'a> {
@@ -207,19 +214,38 @@ impl<'a> VdevRaidz<'a> {
             size, 
             ndevices, 
             nparity, 
-            asize
+            asize,
+            cache: LruCache::new(2_000_000.try_into().unwrap()),
+            cache_hits: 0,
+            cache_misses: 0,
         }
     }
     
     #[must_use]
     pub fn read_sector(&mut self, sector_index: u64) -> Result<Vec<u8>, ()> {
+        if let Some(res) = self.cache.get_mut(&sector_index) {
+            if cfg!(feature = "debug"){
+                self.cache_hits += 1;
+                if self.cache_hits % 100_000_000 == 0 {
+                    println!("Info: Raidz cache hit rate is {}%!", ((self.cache_hits as f64)/(self.cache_hits as f64+self.cache_misses as f64)) * 100.0);
+                }
+            }
+            return Ok(res.clone());
+        }
+
+        if cfg!(feature = "debug"){
+            self.cache_misses += 1;
+        }
+        
         let device_sector_index = sector_index/(self.ndevices as u64);
         let device_number = (sector_index%(self.ndevices as u64)) as usize;
         let asize = self.get_asize();
-        self.devices
+        let res = self.devices
         .get_mut(&device_number)
         .ok_or(())?
-        .read(device_sector_index*(asize as u64), asize)
+        .read(device_sector_index*(asize as u64), asize)?;
+        self.cache.push(sector_index, res.clone());
+        Ok(res)
     }
 
     #[must_use]
@@ -232,7 +258,9 @@ impl<'a> VdevRaidz<'a> {
         self.devices
         .get_mut(&device_number)
         .ok_or(())?
-        .write(device_sector_index*(asize as u64), data)
+        .write(device_sector_index*(asize as u64), data)?;
+        self.cache.push(sector_index, Vec::from(data));
+        Ok(())
     }
 }
 

@@ -75,9 +75,6 @@ impl DataVirtualAddress {
 
         let Some(vdev) = vdevs.get_mut(&0) else { return Err(()); };
 
-        // TODO: This shouldn't need to be here once we can properly bubble up the out of bounds error from lower layers
-        // This is only here for the undelete program so that a dva interpreted from bad data won't be noisy
-        if self.parse_offset()+(size as u64) > vdev.get_size() { return Err(()); }
 
         if let Some(raidz_info) = vdev.get_raidz_info() {
             let number_of_data_sectors = if size % vdev.get_asize() == 0 { size/vdev.get_asize() } else { (size/vdev.get_asize())+1};
@@ -86,6 +83,11 @@ impl DataVirtualAddress {
 
             // TODO: Make sure this handles skip blocks correctly
             let size_with_parity = (number_of_data_sectors+number_of_parity_sectors)*vdev.get_asize();
+            
+            // TODO: This shouldn't need to be here once we can properly bubble up the out of bounds error from lower layers
+            // This is only here for the undelete program so that a dva interpreted from bad data won't be noisy
+            if self.parse_offset()+(size_with_parity as u64) > vdev.get_size() { return Err(()); }
+
             let res = vdev.read(self.parse_offset(), size_with_parity)?;
             
             
@@ -120,6 +122,10 @@ impl DataVirtualAddress {
             assert!(res_transposed.len() == size);
             Ok(res_transposed)
         } else {
+            // TODO: This shouldn't need to be here once we can properly bubble up the out of bounds error from lower layers
+            // This is only here for the undelete program so that a dva interpreted from bad data won't be noisy
+            if self.parse_offset()+(size as u64) > vdev.get_size() { return Err(()); }
+
             vdev.read(self.parse_offset(), size) 
         }
    }
@@ -216,33 +222,33 @@ impl CompressionMethod {
 }
 
 // NOTE: output_size is currently only used for lzjb
-pub fn try_decompress_block(block_data: &[u8], compression_method: CompressionMethod, output_size: usize) -> Result<Vec<u8>, ()> {
+pub fn try_decompress_block(block_data: &[u8], compression_method: CompressionMethod, output_size: usize) -> Result<Vec<u8>, Vec<u8>> {
     let data = match compression_method {
         CompressionMethod::Off => Vec::from(block_data),
         CompressionMethod::Lz4 | CompressionMethod::On => {
             if block_data.len() < 4 {
                 // There has to be at least 4 bytes for the comp_size
-                return Err(());
+                return Err(Vec::new());
             }
 
             let comp_size = u32::from_be_bytes(block_data[0..4].try_into().unwrap());
 
             // Note: comp_size+4 may be equal to block_data.len(), just not greater
             if comp_size as usize + 4 > block_data.len() {
-                return Err(());
+                return Err(Vec::new());
             }
 
             // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
             lz4::lz4_decompress_blocks(&mut block_data[4..comp_size as usize+4].iter().copied())?
         },
-        CompressionMethod::Lzjb => lzjb::lzjb_decompress(&mut block_data.iter().copied(), output_size)?,
+        CompressionMethod::Lzjb => lzjb::lzjb_decompress(&mut block_data.iter().copied(), output_size).map_err(|_| Vec::new())?,
         _ => {
             use crate::ansi_color::*;
             if cfg!(feature = "debug") {
                 println!("{MAGENTA}TODO{WHITE}: {:?} compression is not implemented, returning error", compression_method);
             }
 
-            return Err(());
+            return Err(Vec::new());
         },
     };
     Ok(data)

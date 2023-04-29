@@ -490,15 +490,24 @@ fn main() {
     let compression_methods_and_sizes_to_try = 
         [(CompressionMethod::Lz4, [512*1, 512*2, 512*3, 512*21], [0]/* irrelevant for lz4 */)];
 
+
     // This is the main graph
     let mut recovered_fragments = HashMap::<[u64; 4], Fragment>::new();
 
 
     println!("Step 1. Gathering basic fragments");
 
+    let mut checkpoint_number = 0;
     for off in (0..disk_size).step_by(512) {
-        if off % (512*100_000) == 0 {
+        if off % (128*1024*1024) == 0 && off != 0 {
             println!("{}% done gathering basic fragments ...", ((off as f32)/(disk_size as f32))*100.0);
+        }
+
+        if off % (1*1024*1024*1024) == 0 && off != 0 {
+            println!("Saving checkpoint...");
+            write!(OpenOptions::new().create(true).truncate(true).write(true).open(format!("undelete-step1-checkpoint{checkpoint_number}.json")).unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+            checkpoint_number += 1;
+            println!("Done!");
         }
 
         // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
@@ -507,15 +516,13 @@ fn main() {
         // Since we don't know what the size of the block(if there is any) at this offset might be
         // we just try all possible options
         for compression_method_and_sizes in compression_methods_and_sizes_to_try {
-            for possible_block_size in compression_method_and_sizes.1 {
-                let Ok(data) = dva.dereference(&mut vdevs, possible_block_size) else {
+            for possible_comp_size in compression_method_and_sizes.1 {
+                let Ok(data) = dva.dereference(&mut vdevs, possible_comp_size) else {
                     continue;
                 };
 
                 for possible_decomp_size in compression_method_and_sizes.2 {
-                    let Ok(decomp_data) = zio::try_decompress_block(&data, compression_method_and_sizes.0, possible_decomp_size) else {
-                        continue;
-                    };
+                    let decomp_data = zio::try_decompress_block(&data, compression_method_and_sizes.0, possible_decomp_size).unwrap_or_else(|partial_data| partial_data);
 
                     // Note: order is sort of important here
                     // because some blocks that are actually objsets might get misinterpreted
@@ -533,21 +540,17 @@ fn main() {
                 }
             }
         }
-
     }
 
     println!("Found {} basic fragments", recovered_fragments.len());
-
-    println!("Saving checkpoint 1 ...");
-    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint1.json").unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
     
     println!("Step 2. Building graph");
 
     let roots = build_graph(&mut recovered_fragments, &mut vdevs);
 
-    println!("Saving checkpoint 2 ...");
-    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint2.json").unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
-    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint2-appendix-roots.json").unwrap(), "{}", &serde_json::to_string(&roots).unwrap()).unwrap();
+    println!("Saving checkpoint...");
+    write!(OpenOptions::new().create(true).truncate(true).write(true).open(format!("undelete-step2-checkpoint{checkpoint_number}.json")).unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+    checkpoint_number += 1;
 
     println!("Step 3. Expanding root fragments");
     
@@ -558,14 +561,16 @@ fn main() {
         }
     }
 
-    println!("Saving checkpoint 3 ...");
-    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint3.json").unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+    println!("Saving checkpoint...");
+    write!(OpenOptions::new().create(true).truncate(true).write(true).open(format!("undelete-step3-checkpoint{checkpoint_number}.json")).unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+    checkpoint_number += 1;
 
     println!("Step 4. Rebuilding graph");
     let _roots = build_graph(&mut recovered_fragments, &mut vdevs);
     
-    println!("Saving checkpoint 4 ...");
-    write!(OpenOptions::new().create(true).truncate(true).write(true).open("undelete-checkpoint4.json").unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+    println!("Saving checkpoint...");
+    write!(OpenOptions::new().create(true).truncate(true).write(true).open(format!("undelete-step4-checkpoint{checkpoint_number}.json")).unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
+    checkpoint_number += 1;
 
     dump_graph_to_stdout(&mut recovered_fragments);
     let mut input_line = String::new();
