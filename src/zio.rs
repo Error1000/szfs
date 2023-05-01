@@ -75,13 +75,11 @@ impl DataVirtualAddress {
 
         let Some(vdev) = vdevs.get_mut(&0) else { return Err(()); };
 
-
         if let Some(raidz_info) = vdev.get_raidz_info() {
             let number_of_data_sectors = if size % vdev.get_asize() == 0 { size/vdev.get_asize() } else { (size/vdev.get_asize())+1};
             let number_of_stripes = if number_of_data_sectors%(raidz_info.ndevices-raidz_info.nparity) == 0 { number_of_data_sectors/(raidz_info.ndevices-raidz_info.nparity) } else { number_of_data_sectors/(raidz_info.ndevices-raidz_info.nparity)+1 };
             let number_of_parity_sectors = number_of_stripes*raidz_info.nparity;
 
-            // TODO: Make sure this handles skip blocks correctly
             let size_with_parity = (number_of_data_sectors+number_of_parity_sectors)*vdev.get_asize();
             
             // TODO: This shouldn't need to be here once we can properly bubble up the out of bounds error from lower layers
@@ -104,7 +102,7 @@ impl DataVirtualAddress {
             
             // We have to transpose the data blocks
             // Source: https://github.com/openzfs/zfs/blob/master/lib/libzfs/libzfs_dataset.c#L5357
-            let mut res_transposed = Vec::<u8>::new();
+            let mut res_transposed = Vec::<u8>::with_capacity(number_of_data_sectors*vdev.get_asize());
             // Note: Each disk is usually a single row (however this may not be true if raidz expansion took place, but thanks to the abstractions made by VdevRaidz this doesn't matter)
             // Source: https://youtu.be/Njt82e_3qVo?t=2810
             // TODO: Don't just skip the parity sectors

@@ -1,8 +1,9 @@
 #![feature(map_many_mut)]
 
-use std::{collections::{HashMap, HashSet}, fmt::Debug, fs::{OpenOptions, File}, io::Write, env};
+use std::{collections::{HashMap, HashSet}, fmt::Debug, fs::{OpenOptions, File}, io::Write, sync::{Mutex, atomic::{AtomicU64, Ordering}}, env};
 use serde::{Serialize, Deserialize};
 use szfs::{*, zio::{CompressionMethod, Vdevs}, dmu::{DNode, DNodePlainFileContents, DNodeDirectoryContents, ObjSet}};
+use rayon::prelude::*;
 
 // NOTE: This code assumes the hash function is perfect
 const hash_function: fn(data: &[u8]) -> [u64; 4] = fletcher::do_fletcher4;
@@ -422,40 +423,40 @@ fn dump_graph_to_stdout(fragments: &mut HashMap<[u64; 4], Fragment>) {
     }
 }
 
-fn main() {
+// NOTE: Leaks file descriptors
+// This is a ostrich (just put it in a box and forget about it) algorithm
+fn generate_vdev_raidz() -> Option<VdevRaidz<'static>> {
     use szfs::ansi_color::*;
-    
     let Ok(vdev0) = File::open(env::args().nth(1).unwrap().trim())
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev0!");
-        return;
+        return None;
     };
-    let mut vdev0: VdevFile = vdev0.into();
+    let mut vdev0: Box<_> = Box::from(VdevFile::from(vdev0));
 
     let Ok(vdev1) = File::open(env::args().nth(2).unwrap().trim())
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev1!");
-        return;
+        return None;
     };
-    let mut vdev1: VdevFile = vdev1.into();
+    let vdev1: Box<_> = Box::from(VdevFile::from(vdev1));
 
     let Ok(vdev2) = File::open(env::args().nth(3).unwrap().trim())
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev2!");
-        return;
+        return None;
     };
-    let mut vdev2: VdevFile = vdev2.into();
+    let vdev2: Box<_> = Box::from(VdevFile::from(vdev2));
 
     let Ok(vdev3) = File::open(env::args().nth(4).unwrap().trim())
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev3!");
-        return;
+        return None;
     };
-    let mut vdev3: VdevFile = vdev3.into();
+    let vdev3: Box<_> = Box::from(VdevFile::from(vdev3));
 
     // For now just use the first label
     let mut label0 = VdevLabel::from_bytes(&vdev0.read_raw_label(0).expect("Vdev label 0 must be parsable!"));
-
     let name_value_pairs = nvlist::from_bytes_xdr(&mut label0.get_name_value_pairs_raw().iter().copied()).expect("Name value pairs in the vdev label must be valid!");
     let nvlist::Value::NVList(vdev_tree) = &name_value_pairs["vdev_tree"] else {
         panic!("vdev_tree is not an nvlist!");
@@ -465,26 +466,36 @@ fn main() {
         panic!("no ashift found for top level vdev!");
     };
 
-    let nvlist::Value::U64(_label_txg) = name_value_pairs["txg"] else {
-        panic!("no txg found in label!");
-    };
-
-    println!("{CYAN}Info{WHITE}: Parsed nv_list, {name_value_pairs:?}!");
-
-
-    let mut devices = Vdevs::new();
-    devices.insert(0, &mut vdev0);
-    devices.insert(1, &mut vdev1);
-    devices.insert(2, &mut vdev2);
-    devices.insert(3, &mut vdev3);
-
-    let mut vdev_raidz: VdevRaidz = VdevRaidz::from_vdevs(devices, 4, 1, 2_usize.pow(top_level_ashift as u32));
-
     label0.set_raw_uberblock_size(2_usize.pow(top_level_ashift as u32));
 
-    let disk_size = vdev_raidz.get_size();
-    let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
-    vdevs.insert(0usize, &mut vdev_raidz);
+    let mut devices = Vdevs::new();
+
+    // Note: when the RaidzVdev gets deallocated it will *NOT* deallocate the underlying vdevs because of this unsafe, thus leaking the file descriptors
+    devices.insert(0, unsafe{&mut *Box::into_raw(vdev0)});
+    devices.insert(1, unsafe{&mut *Box::into_raw(vdev1)});
+    devices.insert(2, unsafe{&mut *Box::into_raw(vdev2)});
+    devices.insert(3, unsafe{&mut *Box::into_raw(vdev3)});
+
+    Some(VdevRaidz::from_vdevs(devices, 4, 1, 2_usize.pow(top_level_ashift as u32)))
+}
+
+fn main() {
+    {
+        use crate::ansi_color::*;
+        let Ok(vdev0) = File::open(env::args().nth(1).unwrap().trim())
+        else {
+            println!("{RED}Fatal{WHITE}: Failed to open vdev0!");
+            return;
+        };
+        let mut vdev0 = VdevFile::from(vdev0);
+        let label0 = VdevLabel::from_bytes(&vdev0.read_raw_label(0).expect("Vdev label 0 must be parsable!"));
+        let name_value_pairs = nvlist::from_bytes_xdr(&mut label0.get_name_value_pairs_raw().iter().copied()).expect("Name value pairs in the vdev label must be valid!");
+        println!("{CYAN}Info{WHITE}: Parsed nv_list, {name_value_pairs:?}!");
+    }
+
+    let mut vdev_raidz = generate_vdev_raidz().unwrap();    
+    
+    let disk_size: usize = vdev_raidz.get_size().try_into().unwrap();
 
     // The sizes are just the most common sizes i have seen while looking at the sizes of compressed indirect blocks, and also 512
     let compression_methods_and_sizes_to_try = 
@@ -494,58 +505,64 @@ fn main() {
     // This is the main graph
     let mut recovered_fragments = HashMap::<[u64; 4], Fragment>::new();
 
+    let global_offset = AtomicU64::from(0);
 
     println!("Step 1. Gathering basic fragments");
 
     let mut checkpoint_number = 0;
-    for off in (0..disk_size).step_by(512) {
-        if off % (128*1024*1024) == 0 && off != 0 {
-            println!("{}% done gathering basic fragments ...", ((off as f32)/(disk_size as f32))*100.0);
-        }
+    let step_size = ((disk_size/num_cpus::get())/512)*512;
+    recovered_fragments.par_extend((0..disk_size).into_par_iter().step_by(step_size).flat_map_iter(|task_off|{
+        let mut vdevs: HashMap::<usize, &mut dyn Vdev> = HashMap::new();
+        let mut vdev_raidz = generate_vdev_raidz().unwrap();
+        vdevs.insert(0usize, &mut vdev_raidz);
+        let mut res = HashMap::<[u64; 4], Fragment>::new();
 
-        if off % (10*1024*1024*1024) == 0 && off != 0 {
-            println!("Saving checkpoint...");
-            write!(OpenOptions::new().create(true).truncate(true).write(true).open(format!("undelete-step1-checkpoint{checkpoint_number}.json")).unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
-            checkpoint_number += 1;
-            println!("Done!");
-        }
+        for off in (task_off..task_off+step_size).step_by(512){
+            let global_offset_val = global_offset.load(Ordering::Relaxed);
+            global_offset.store(global_offset_val+512, Ordering::Relaxed);
+            if global_offset_val % (256*1024*1024) == 0 && global_offset_val != 0 {
+                println!("{}% done gathering basic fragments ...", ((global_offset_val as f32)/(disk_size as f32))*100.0);
+            }
 
-        // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
-        let dva = szfs::zio::DataVirtualAddress::from(0, 512, off, false);
+            // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
+            let dva = szfs::zio::DataVirtualAddress::from(0, 512, off as u64, false);
 
-        // Since we don't know what the size of the block(if there is any) at this offset might be
-        // we just try all possible options
-        for compression_method_and_sizes in compression_methods_and_sizes_to_try {
-            for possible_comp_size in compression_method_and_sizes.1 {
-                let Ok(data) = dva.dereference(&mut vdevs, possible_comp_size) else {
-                    continue;
-                };
+            // Since we don't know what the size of the block(if there is any) at this offset might be
+            // we just try all possible options
+            for compression_method_and_sizes in compression_methods_and_sizes_to_try {
+                for possible_comp_size in compression_method_and_sizes.1 {
+                    let Ok(data) = dva.dereference(&mut vdevs, possible_comp_size) else {
+                        continue;
+                    };
 
-                for possible_decomp_size in compression_method_and_sizes.2 {
-                    let decomp_data = zio::try_decompress_block(&data, compression_method_and_sizes.0, possible_decomp_size).unwrap_or_else(|partial_data| partial_data);
+                    for possible_decomp_size in compression_method_and_sizes.2 {
+                        let decomp_data = zio::try_decompress_block(&data, compression_method_and_sizes.0, possible_decomp_size).unwrap_or_else(|partial_data| partial_data);
 
-                    // Note: order is sort of important here
-                    // because some blocks that are actually objsets might get misinterpreted
-                    // as indirect blocks that only contain 3 block pointers
-                    // but because we do the objset interpretation last
-                    // if it succeeds it can override the bad indirect block interpretation by having the same hash
-                    
-                    let indirect_block_data_hash = hash_function(&decomp_data);
-                    if let Some(res) = IndirectBlock::from_bytes_le(&decomp_data, &mut vdevs) {
-                        recovered_fragments.insert(indirect_block_data_hash, FragmentData::IndirectBlock(res).into());
+                        // Note: order is sort of important here
+                        // because some blocks that are actually objsets might get misinterpreted
+                        // as indirect blocks that only contain 3 block pointers
+                        // but because we do the objset interpretation last
+                        // if it succeeds it can override the bad indirect block interpretation by having the same hash
+                        let indirect_block_data_hash = hash_function(&decomp_data);
+                        if let Some(indirect_block) = IndirectBlock::from_bytes_le(&decomp_data, &mut vdevs) {
+                            res.insert(indirect_block_data_hash, FragmentData::IndirectBlock(indirect_block).into());
+                        }
+                        res.extend(search_le_bytes_for_dnodes(&decomp_data, &mut vdevs));
                     }
-
-                    let res = search_le_bytes_for_dnodes(&decomp_data, &mut vdevs);
-                    recovered_fragments.extend(res);
                 }
             }
         }
-    }
+        return res.into_iter();
+    }));
 
     println!("Found {} basic fragments", recovered_fragments.len());
+
     println!("Saving checkpoint...");
     write!(OpenOptions::new().create(true).truncate(true).write(true).open(format!("undelete-step1-checkpoint{checkpoint_number}.json")).unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
     checkpoint_number += 1;
+
+    let mut vdevs: HashMap::<usize, &mut dyn Vdev> = HashMap::new();
+    vdevs.insert(0usize, &mut vdev_raidz);
 
     println!("Step 2. Building graph");
 

@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::{fs::File, io::{SeekFrom, Seek, Read, Write}, fmt::Debug, collections::HashMap};
+use std::{fs::File, io::{SeekFrom, Seek, Read, Write}, fmt::Debug};
 
 use byte_iter::ByteIter;
 use lru::LruCache;
@@ -65,6 +65,12 @@ pub struct VdevDisk {
     device: File
 }
 
+impl From<File> for VdevDisk {
+    fn from(f: File) -> Self {
+        Self { device: f }
+    }
+}
+
 impl VdevRaw for VdevDisk {
     fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
        let mut buf = vec![0u8; amount_in_bytes];
@@ -93,17 +99,27 @@ pub struct VdevFile {
     device: File,
 }
 
+impl From<File> for VdevFile {
+    fn from(f: File) -> Self {
+        Self { device: f }
+    }
+}
+
 impl VdevRaw for VdevFile {
     fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
        let mut buf = vec![0u8; amount_in_bytes];
        self.device.seek(SeekFrom::Start(offset_in_bytes)).map_err(|_| ())?;
-       self.device.read(&mut buf).map_err(|_| ())?;
+       if self.device.read(&mut buf).map_err(|_| ())? != amount_in_bytes {
+        return Err(());
+       }
        Ok(buf)
-   }  
+    }  
 
    fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()>{
     self.device.seek(SeekFrom::Start(offset_in_bytes)).map_err(|_| ())?;
-    self.device.write(data).map_err(|_| ())?;
+    if self.device.write(data).map_err(|_| ())? != data.len() {
+        return Err(());
+    }
     Ok(())
    }
    
@@ -184,13 +200,7 @@ where T: VdevRaw + Debug {
 }
 
 
-impl From<File> for VdevFile {
-    fn from(f: File) -> Self {
-        Self { device: f }
-    }
-}
 
-unsafe impl<'a> Send for VdevRaidz<'a> {}
 pub struct VdevRaidz<'a> {
     devices: Vdevs<'a>,
     size: u64,
@@ -198,8 +208,7 @@ pub struct VdevRaidz<'a> {
     nparity: usize,
     asize: usize,
     // This is based on a profiler showing that we hit read_sector heavily and since disk access is slow
-    // and because we tend to access the same sectors multiple times (cache hit rate is ~99% as measured in runtime) in a non-sequential order,
-    // giving this ~1 gigabyte of space seems reasonable
+    // and because we tend to access the same sectors multiple times (cache hit rate is ~97% as measured in runtime) in a non-sequential order,
     cache: LruCache<u64, Vec<u8>>,
     cache_hits: u64,
     cache_misses: u64,
@@ -215,7 +224,7 @@ impl<'a> VdevRaidz<'a> {
             ndevices, 
             nparity, 
             asize,
-            cache: LruCache::new(2_000_000.try_into().unwrap()),
+            cache: LruCache::new(500_000.try_into().unwrap()),
             cache_hits: 0,
             cache_misses: 0,
         }
@@ -223,19 +232,14 @@ impl<'a> VdevRaidz<'a> {
     
     #[must_use]
     pub fn read_sector(&mut self, sector_index: u64) -> Result<Vec<u8>, ()> {
-        if let Some(res) = self.cache.get_mut(&sector_index) {
-            if cfg!(feature = "debug"){
-                self.cache_hits += 1;
-                if self.cache_hits % 100_000_000 == 0 {
-                    println!("Info: Raidz cache hit rate is {}%!", ((self.cache_hits as f64)/(self.cache_hits as f64+self.cache_misses as f64)) * 100.0);
-                }
-            }
-            return Ok(res.clone());
+        if let Some(res) = self.cache.get_mut(&sector_index).cloned() {
+            //self.cache_hits += 1;
+            //if self.cache_hits % 4_000_000 == 0 {
+            //    println!("Info: Raidz sector cache hit rate is {}%!", ((self.cache_hits as f64)/(self.cache_hits as f64+self.cache_misses as f64)) * 100.0);
+            //}
+            return Ok(res);
         }
-
-        if cfg!(feature = "debug"){
-            self.cache_misses += 1;
-        }
+        //self.cache_misses += 1;
         
         let device_sector_index = sector_index/(self.ndevices as u64);
         let device_number = (sector_index%(self.ndevices as u64)) as usize;
@@ -280,7 +284,7 @@ impl Vdev for VdevRaidz<'_> {
     // Note: Reading 0 bytes will *always* succeed
     fn read(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
         if amount_in_bytes == 0 { return Ok(Vec::new()); }
-        let mut result: Vec<u8> = Vec::new();
+        let mut result: Vec<u8> = Vec::with_capacity(amount_in_bytes+self.get_asize()*2);
         let first_sector_index = offset_in_bytes/(self.get_asize() as u64);
         let first_sector_offset = offset_in_bytes%(self.get_asize() as u64);
         let first_sector = self.read_sector(first_sector_index)?;
@@ -297,7 +301,7 @@ impl Vdev for VdevRaidz<'_> {
             result.extend(self.read_sector(first_sector_index+sector_index as u64)?);
         }
     
-        if result.len() >= amount_in_bytes {
+        if result.len() > amount_in_bytes {
             result.resize(amount_in_bytes, 0);
         }
         
