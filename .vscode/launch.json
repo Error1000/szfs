@@ -4,6 +4,7 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "type": "lldb",
             "request": "launch",
@@ -12,14 +13,39 @@
                 "args": [
                     "build",
                     "--bin=fs-walker",
-                    "--package=szfs"
+                    "--package=szfs",
                 ],
                 "filter": {
                     "name": "fs-walker",
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "args": ["/mnt/virt1/image",
+            "/mnt/virt2/image",
+            "/mnt/virt3/image",
+            "/mnt/virt4/image"],
+            "cwd": "${workspaceFolder}"
+        },
+
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'recover'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=recover",
+                    "--package=szfs",
+                ],
+                "filter": {
+                    "name": "recover",
+                    "kind": "bin"
+                }
+            },
+            "args": ["/mnt/virt1/image",
+            "/mnt/virt2/image",
+            "/mnt/virt3/image",
+            "/mnt/virt4/image"],
             "cwd": "${workspaceFolder}"
         },
         {
@@ -30,14 +56,17 @@
                 "args": [
                     "build",
                     "--bin=undelete",
-                    "--package=szfs"
+                    "--package=szfs",
                 ],
                 "filter": {
                     "name": "undelete",
                     "kind": "bin"
                 }
             },
-            "args": [],
+            "args": ["/mnt/virt1/image",
+            "/mnt/virt2/image",
+            "/mnt/virt3/image",
+            "/mnt/virt4/image"],
             "cwd": "${workspaceFolder}"
         }
     ]

@@ -41,7 +41,7 @@ impl ZapLeafChunkType {
             252 => Self::Entry,
             251 => Self::Array,
             253 => Self::Free,
-            _ => return None
+            _ => return None,
         })
     }
 }
@@ -52,7 +52,7 @@ pub enum Value {
     Byte(u8),
     ByteArray(Vec<u8>),
     U64Array(Vec<u64>),
-    U16Array(Vec<u16>)
+    U16Array(Vec<u16>),
 }
 
 impl Debug for Value {
@@ -68,7 +68,6 @@ impl Debug for Value {
     }
 }
 
-
 fn micro_zap_name_repeated() {
     panic!("Micro Zap name repeated, this is not supported!");
 }
@@ -80,7 +79,7 @@ fn fat_zap_name_repeated() {
 pub struct MicroZapEntry {
     value: u64,
     collision_differentiator: u32,
-    name: Vec<u8>
+    name: Vec<u8>,
 }
 
 impl MicroZapEntry {
@@ -90,9 +89,9 @@ impl MicroZapEntry {
 
     pub fn get_name_length() -> usize {
         Self::get_ondisk_size()
-        - core::mem::size_of::<u64>()
-        - core::mem::size_of::<u32>()
-        - core::mem::size_of::<u16>() /* padding */
+            - core::mem::size_of::<u64>()
+            - core::mem::size_of::<u32>()
+            - core::mem::size_of::<u16>() /* padding */
     }
 
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<MicroZapEntry> {
@@ -102,22 +101,28 @@ impl MicroZapEntry {
         let name = Vec::from_iter(data.take(Self::get_name_length()));
         assert!(name.len() == Self::get_name_length());
         Some(MicroZapEntry {
-            value, 
-            collision_differentiator, 
-            name
+            value,
+            collision_differentiator,
+            name,
         })
     }
 
     #[must_use]
-    pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) -> Option<()>{
+    pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) -> Option<()> {
         let nul_index = self.name.iter().position(|byte| *byte == 0)?;
         let name = std::str::from_utf8(&self.name[0..nul_index]).ok()?;
-        if name.len() == 0 { return None; } // Deal with empty entries ( entires that are all zeroes )
-        if hashmap.insert(name.to_string(), Value::U64(self.value)).is_some() { micro_zap_name_repeated() }
+        if name.is_empty() {
+            return None;
+        } // Deal with empty entries ( entires that are all zeroes )
+        if hashmap
+            .insert(name.to_string(), Value::U64(self.value))
+            .is_some()
+        {
+            micro_zap_name_repeated()
+        }
         Some(())
     }
 }
-
 
 #[derive(Debug)]
 pub struct ZapLeaf {
@@ -129,10 +134,13 @@ pub struct ZapLeaf {
 impl ZapLeaf {
     fn get_hash_table_numentries(block_size: usize) -> usize {
         // https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L77
-        block_size/32
+        block_size / 32
     }
 
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>, block_size: usize) -> Option<ZapLeaf> {
+    pub fn from_bytes_le(
+        data: &mut impl Iterator<Item = u8>,
+        block_size: usize,
+    ) -> Option<ZapLeaf> {
         let header = ZapLeafHeader::from_bytes_le(data)?;
         let mut hash_table = vec![0u16; Self::get_hash_table_numentries(block_size)];
         for value in hash_table.iter_mut() {
@@ -141,14 +149,20 @@ impl ZapLeaf {
 
         // Calculate length of chunk array
         // https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L45
-        let remaining_bytes = block_size - ZapLeafHeader::get_ondisk_size() - Self::get_hash_table_numentries(block_size)*core::mem::size_of::<u16>();
-        let nchunks = remaining_bytes/ZapLeafChunk::get_ondisk_size();
+        let remaining_bytes = block_size
+            - ZapLeafHeader::get_ondisk_size()
+            - Self::get_hash_table_numentries(block_size) * core::mem::size_of::<u16>();
+        let nchunks = remaining_bytes / ZapLeafChunk::get_ondisk_size();
         let mut chunks = Vec::<ZapLeafChunk>::new();
-        for _ in 0..nchunks{
+        for _ in 0..nchunks {
             chunks.push(ZapLeafChunk::from_bytes_le(data)?);
         }
-        
-        Some(ZapLeaf { header, hash_table, chunks })
+
+        Some(ZapLeaf {
+            header,
+            hash_table,
+            chunks,
+        })
     }
 
     pub fn get_chunks(&self) -> &Vec<ZapLeafChunk> {
@@ -159,20 +173,36 @@ impl ZapLeaf {
     pub fn dump_contents_into(&self, hashmap: &mut HashMap<String, Value>) -> Option<()> {
         for chunk in self.get_chunks() {
             match chunk {
-                ZapLeafChunk::Entry { int_size, next_chunk_id: _, name_chunk_id, name_length, value_chunk_id, nvalues, collision_differentiator: _, hash: _ } => {
+                ZapLeafChunk::Entry {
+                    int_size,
+                    next_chunk_id: _,
+                    name_chunk_id,
+                    name_length,
+                    value_chunk_id,
+                    nvalues,
+                    collision_differentiator: _,
+                    hash: _,
+                } => {
                     let int_size = usize::from(*int_size);
                     let name_length = usize::from(*name_length);
                     let nvalues = usize::from(*nvalues);
 
-                    let name_chunk = self.read_data_starting_at_chunk(usize::from(*name_chunk_id), name_length-1)?;
-                    let value_chunk = self.read_data_starting_at_chunk(usize::from(*value_chunk_id), nvalues * int_size)?;
+                    let name_chunk = self.read_data_starting_at_chunk(
+                        usize::from(*name_chunk_id),
+                        name_length - 1,
+                    )?;
+                    let value_chunk = self.read_data_starting_at_chunk(
+                        usize::from(*value_chunk_id),
+                        nvalues * int_size,
+                    )?;
                     let name = std::str::from_utf8(&name_chunk).ok()?;
-                    
 
                     match int_size {
                         8 if nvalues == 1 => {
                             let value = value_chunk.iter().copied().read_u64_be()?;
-                            if hashmap.insert(name.to_owned(), Value::U64(value)).is_some() { fat_zap_name_repeated()}
+                            if hashmap.insert(name.to_owned(), Value::U64(value)).is_some() {
+                                fat_zap_name_repeated()
+                            }
                         }
 
                         8 if nvalues > 1 => {
@@ -181,12 +211,22 @@ impl ZapLeaf {
                             for _ in 0..nvalues {
                                 values.push(iter.read_u64_be()?);
                             }
-                            if hashmap.insert(name.to_owned(), Value::U64Array(values)).is_some() { fat_zap_name_repeated()}
+                            if hashmap
+                                .insert(name.to_owned(), Value::U64Array(values))
+                                .is_some()
+                            {
+                                fat_zap_name_repeated()
+                            }
                         }
 
                         1 if nvalues == 1 => {
                             let value = value_chunk.iter().copied().read_u8()?;
-                            if hashmap.insert(name.to_owned(), Value::Byte(value)).is_some() { fat_zap_name_repeated()}
+                            if hashmap
+                                .insert(name.to_owned(), Value::Byte(value))
+                                .is_some()
+                            {
+                                fat_zap_name_repeated()
+                            }
                         }
 
                         1 if nvalues > 1 => {
@@ -195,12 +235,19 @@ impl ZapLeaf {
                             for _ in 0..nvalues {
                                 values.push(iter.read_u8()?);
                             }
-                            if hashmap.insert(name.to_owned(), Value::ByteArray(values)).is_some() { fat_zap_name_repeated()}
+                            if hashmap
+                                .insert(name.to_owned(), Value::ByteArray(values))
+                                .is_some()
+                            {
+                                fat_zap_name_repeated()
+                            }
                         }
 
                         2 if nvalues == 1 => {
                             let value = value_chunk.iter().copied().read_u16_be()?;
-                            if hashmap.insert(name.to_owned(), Value::U16(value)).is_some() { fat_zap_name_repeated()}
+                            if hashmap.insert(name.to_owned(), Value::U16(value)).is_some() {
+                                fat_zap_name_repeated()
+                            }
                         }
 
                         2 if nvalues > 1 => {
@@ -209,14 +256,25 @@ impl ZapLeaf {
                             for _ in 0..nvalues {
                                 values.push(iter.read_u16_be()?);
                             }
-                            if hashmap.insert(name.to_owned(), Value::U16Array(values)).is_some() { fat_zap_name_repeated()}
-
+                            if hashmap
+                                .insert(name.to_owned(), Value::U16Array(values))
+                                .is_some()
+                            {
+                                fat_zap_name_repeated()
+                            }
                         }
 
-                        _ => todo!("Implement reading: {} values of size: {} in ZAP.", nvalues, int_size)
+                        _ => todo!(
+                            "Implement reading: {} values of size: {} in ZAP.",
+                            nvalues,
+                            int_size
+                        ),
                     }
-                },
-                ZapLeafChunk::Array { array: _, next_chunk_id: _ } => (),
+                }
+                ZapLeafChunk::Array {
+                    array: _,
+                    next_chunk_id: _,
+                } => (),
                 ZapLeafChunk::Free { next_chunk_id: _ } => (),
             }
         }
@@ -228,16 +286,32 @@ impl ZapLeaf {
         let mut chunk_to_read = &self.chunks[chunk_id];
         while data.len() < size {
             match chunk_to_read {
-                ZapLeafChunk::Entry { int_size: _, next_chunk_id: _, name_chunk_id: _, name_length: _, value_chunk_id: _, nvalues: _, collision_differentiator: _, hash: _ }  => return None,
-                ZapLeafChunk::Array { array, next_chunk_id } => {
+                ZapLeafChunk::Entry {
+                    int_size: _,
+                    next_chunk_id: _,
+                    name_chunk_id: _,
+                    name_length: _,
+                    value_chunk_id: _,
+                    nvalues: _,
+                    collision_differentiator: _,
+                    hash: _,
+                } => return None,
+                ZapLeafChunk::Array {
+                    array,
+                    next_chunk_id,
+                } => {
                     data.extend(array);
-                    if *next_chunk_id == u16::MAX { break; }
+                    if *next_chunk_id == u16::MAX {
+                        break;
+                    }
                     chunk_to_read = &self.chunks[usize::from(*next_chunk_id)];
-                },
+                }
                 ZapLeafChunk::Free { next_chunk_id: _ } => return None,
             }
         }
-        if data.len() < size { return None; }
+        if data.len() < size {
+            return None;
+        }
         data.resize(size, 0);
         Some(data)
     }
@@ -250,7 +324,7 @@ pub struct ZapLeafHeader {
     nfree: u16,
     nentries: u16,
     prefix_len: u16,
-    freelist: u16
+    freelist: u16,
 }
 
 pub const ZAP_LEAF_MAGIC: u32 = 0x2AB1EAF;
@@ -263,7 +337,13 @@ impl ZapLeafHeader {
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<ZapLeafHeader> {
         let zap_type = ZapType::from_value(data.read_u64_le()?)?;
         use crate::ansi_color::*;
-        if zap_type != ZapType::FatZapLeaf { println!("{YELLOW}Warning{WHITE}: Attempted to parse a {:?} as a leaf, sanity check failed!", zap_type); return None; };
+        if zap_type != ZapType::FatZapLeaf {
+            println!(
+                "{YELLOW}Warning{WHITE}: Attempted to parse a {:?} as a leaf, sanity check failed!",
+                zap_type
+            );
+            return None;
+        };
         let next_leaf = data.read_u64_le()?;
         let prefix = data.read_u64_le()?;
         let magic = data.read_u32_le()?;
@@ -273,13 +353,13 @@ impl ZapLeafHeader {
         let prefix_len = data.read_u16_le()?;
         let freelist = data.read_u16_le()?;
         data.skip_n_bytes(12)?;
-        Some(ZapLeafHeader { 
-            next_leaf, 
-            prefix, 
-            nfree, 
-            nentries, 
-            prefix_len, 
-            freelist 
+        Some(ZapLeafHeader {
+            next_leaf,
+            prefix,
+            nfree,
+            nentries,
+            prefix_len,
+            freelist,
         })
     }
 }
@@ -294,15 +374,15 @@ pub enum ZapLeafChunk {
         value_chunk_id: u16,
         nvalues: u16,
         collision_differentiator: u16,
-        hash: u64
+        hash: u64,
     },
-    Array{
+    Array {
         array: Vec<u8>,
         next_chunk_id: u16,
     },
-    Free{
-        next_chunk_id: u16
-    }
+    Free {
+        next_chunk_id: u16,
+    },
 }
 
 impl ZapLeafChunk {
@@ -313,7 +393,7 @@ impl ZapLeafChunk {
 
     pub fn get_byte_array_size() -> usize {
         // https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L62
-        Self::get_ondisk_size()-3
+        Self::get_ondisk_size() - 3
     }
 
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<ZapLeafChunk> {
@@ -329,30 +409,33 @@ impl ZapLeafChunk {
                 let collision_differentiator = data.read_u16_le()?;
                 data.skip_n_bytes(2)?; // padding
                 let hash = data.read_u64_le()?;
-                Some(ZapLeafChunk::Entry { 
-                    int_size, 
-                    next_chunk_id, 
-                    name_chunk_id, 
-                    name_length, 
-                    value_chunk_id, 
-                    nvalues, 
-                    collision_differentiator, 
-                    hash 
+                Some(ZapLeafChunk::Entry {
+                    int_size,
+                    next_chunk_id,
+                    name_chunk_id,
+                    name_length,
+                    value_chunk_id,
+                    nvalues,
+                    collision_differentiator,
+                    hash,
                 })
-            },
+            }
             ZapLeafChunkType::Array => {
                 let mut array = vec![0u8; Self::get_byte_array_size()];
                 for byte in array.iter_mut() {
                     *byte = data.read_u8()?;
                 }
                 let next_chunk_id = data.read_u16_le()?;
-                Some(ZapLeafChunk::Array { array, next_chunk_id })
-            },
+                Some(ZapLeafChunk::Array {
+                    array,
+                    next_chunk_id,
+                })
+            }
             ZapLeafChunkType::Free => {
                 data.skip_n_bytes(Self::get_byte_array_size())?;
                 let next_chunk_id = data.read_u16_le()?;
                 Some(ZapLeafChunk::Free { next_chunk_id })
-            },
+            }
         }
     }
 }
@@ -363,21 +446,21 @@ pub struct ZapPointerTable {
     num_blocks: u64,
     shift: u64,
     next_block: u64,
-    blocks_copied: u64
+    blocks_copied: u64,
 }
 
 impl ZapPointerTable {
     pub const fn get_ondisk_size() -> usize {
-        core::mem::size_of::<u64>()*5
+        core::mem::size_of::<u64>() * 5
     }
 
     pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<ZapPointerTable> {
-        Some(ZapPointerTable { 
-            block_id: data.read_u64_le()?, 
-            num_blocks: data.read_u64_le()?, 
-            shift: data.read_u64_le()?, 
-            next_block: data.read_u64_le()?, 
-            blocks_copied: data.read_u64_le()? 
+        Some(ZapPointerTable {
+            block_id: data.read_u64_le()?,
+            num_blocks: data.read_u64_le()?,
+            shift: data.read_u64_le()?,
+            next_block: data.read_u64_le()?,
+            blocks_copied: data.read_u64_le()?,
         })
     }
 }
@@ -389,92 +472,118 @@ pub struct FatZapHeader {
     num_leafs: u64,
     num_entries: u64,
     table: ZapPointerTable,
-    embbeded_leafs_pointer_table: Vec<u64>
+    embbeded_leafs_pointer_table: Vec<u64>,
 }
 
 pub const FAT_ZAP_MAGIC: u64 = 0x2F52AB2AB;
 
 impl FatZapHeader {
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>, block_size: usize) -> Option<FatZapHeader> {
+    pub fn from_bytes_le(
+        data: &mut impl Iterator<Item = u8>,
+        block_size: usize,
+    ) -> Option<FatZapHeader> {
         let zap_magic = data.read_u64_le()?;
         if zap_magic != FAT_ZAP_MAGIC {
             return None;
         }
-        
+
         let table = ZapPointerTable::from_bytes_le(data)?;
         let free_blocks = data.read_u64_le()?;
         let num_leafs = data.read_u64_le()?;
         let num_entries = data.read_u64_le()?;
         let _salt = data.read_u64_le()?;
-        data.skip_n_bytes(block_size/2-(core::mem::size_of::<u64>()*6+ZapPointerTable::get_ondisk_size()))?;
-        let mut embbeded_leafs_pointer_table = vec![0u64; block_size/2/core::mem::size_of::<u64>()];
+        data.skip_n_bytes(
+            block_size / 2 - (core::mem::size_of::<u64>() * 6 + ZapPointerTable::get_ondisk_size()),
+        )?;
+        let mut embbeded_leafs_pointer_table =
+            vec![0u64; block_size / 2 / core::mem::size_of::<u64>()];
         for value in embbeded_leafs_pointer_table.iter_mut() {
             *value = data.read_u64_le()?;
         }
 
-        Some(FatZapHeader{
-            free_blocks, 
-            num_leafs, 
-            num_entries, 
-            table, 
-            embbeded_leafs_pointer_table 
+        Some(FatZapHeader {
+            free_blocks,
+            num_leafs,
+            num_entries,
+            table,
+            embbeded_leafs_pointer_table,
         })
     }
 
     pub fn get_hash_table_size(&self) -> usize {
         if self.table.block_id == 0 {
             return self.embbeded_leafs_pointer_table.len();
-        } else { todo!("Implement non-embedded fat zap tables!"); }
+        } else {
+            todo!("Implement non-embedded fat zap tables!");
+        }
     }
 
     pub fn read_hash_table_at(&self, index: usize) -> u64 {
         if self.table.block_id == 0 {
             return self.embbeded_leafs_pointer_table[index];
-        } else { todo!("Implement non-embedded fat zap tables!"); }
+        } else {
+            todo!("Implement non-embedded fat zap tables!");
+        }
     }
 }
 
 #[derive(Debug)]
 pub enum ZapHeader {
     FatZap(FatZapHeader),
-    MicroZap
+    MicroZap,
 }
 
 impl ZapHeader {
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>, block_size: usize) -> Option<ZapHeader> {
+    pub fn from_bytes_le(
+        data: &mut impl Iterator<Item = u8>,
+        block_size: usize,
+    ) -> Option<ZapHeader> {
         let zap_type = ZapType::from_value(data.read_u64_le()?)?;
         return match zap_type {
             ZapType::FatZapHeader => {
-                FatZapHeader::from_bytes_le(data, block_size)
-                .map(|header| ZapHeader::FatZap(header))
-            },
+                FatZapHeader::from_bytes_le(data, block_size).map(ZapHeader::FatZap)
+            }
 
             ZapType::MicroZap => {
-                data.skip_n_bytes(64-core::mem::size_of::<u64>())?;
+                data.skip_n_bytes(64 - core::mem::size_of::<u64>())?;
                 Some(Self::MicroZap)
-            },
+            }
 
-            ZapType::FatZapLeaf => None
+            ZapType::FatZapLeaf => None,
         };
     }
 
-    pub fn dump_contents(&self, parent_dnode: &mut DNodeBase, vdevs: &mut Vdevs) -> Option<HashMap<String, Value>> {
+    pub fn dump_contents(
+        &self,
+        parent_dnode: &mut DNodeBase,
+        vdevs: &mut Vdevs,
+    ) -> Option<HashMap<String, Value>> {
         let mut result = HashMap::<String, Value>::new();
         match self {
             ZapHeader::FatZap(header) => {
                 let mut leafs_read = HashSet::<u64>::new();
                 for i in 0..header.get_hash_table_size() {
                     let block_id = header.read_hash_table_at(i);
-                    if !leafs_read.insert(block_id) { continue; }
-                    let leaf = ZapLeaf::from_bytes_le(&mut parent_dnode.read_block(block_id as usize, vdevs).ok()?.iter().copied(), parent_dnode.parse_data_block_size())?;
+                    if !leafs_read.insert(block_id) {
+                        continue;
+                    }
+                    let leaf = ZapLeaf::from_bytes_le(
+                        &mut parent_dnode
+                            .read_block(block_id as usize, vdevs)
+                            .ok()?
+                            .iter()
+                            .copied(),
+                        parent_dnode.parse_data_block_size(),
+                    )?;
                     leaf.dump_contents_into(&mut result)?;
                 }
-            },
+            }
             ZapHeader::MicroZap => {
                 let data = parent_dnode.read_block(0, vdevs).ok()?;
                 let mut data = data.iter().copied();
                 data.skip_n_bytes(64)?;
-                let nentries = (parent_dnode.parse_data_block_size()-64)/MicroZapEntry::get_ondisk_size();
+                let nentries =
+                    (parent_dnode.parse_data_block_size() - 64) / MicroZapEntry::get_ondisk_size();
                 for _ in 0..nentries {
                     let entry = MicroZapEntry::from_bytes_le(&mut data)?;
                     // Ignore empty/broken entries
@@ -482,7 +591,7 @@ impl ZapHeader {
                     // TODO: Should we bail out on broken entries, which is what we do for fat zaps?
                     let _ = entry.dump_contents_into(&mut result);
                 }
-            },
+            }
         }
         Some(result)
     }

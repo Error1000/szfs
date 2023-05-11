@@ -24,8 +24,8 @@ where
 {
     fn skip_n_bytes(&mut self, n_bytes: usize) -> Option<()> {
         if n_bytes > 0 {
-            self.nth(n_bytes-1)?;
-        }    
+            self.nth(n_bytes - 1)?;
+        }
         Some(())
     }
 
