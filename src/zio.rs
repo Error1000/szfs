@@ -118,7 +118,7 @@ impl DataVirtualAddress {
 
             let res = vdev.read(self.parse_offset(), size_with_parity)?;
 
-            // If we are doing raidz1, then the parity siwtches places with the first data column on odd megabyte offsets
+            // If we are doing raidz1, then the parity switches places with the first data column on odd megabyte offsets
             // I'm not kidding, THAT is how it actually works, that was a fun one to debug :)
             // Source: https://github.com/openzfs/zfs/blob/master/module/zfs/vdev_raidz.c#L398
             // Second source: https://github.com/openzfs/zfs/issues/12538#issuecomment-1251651412
@@ -128,7 +128,7 @@ impl DataVirtualAddress {
                 column_mapping.swap(0, 1);
             }
 
-            // We have to transpose the data blocks
+            // We have to transpose the data blocks because raidz stores data in column major order
             // Source: https://github.com/openzfs/zfs/blob/master/lib/libzfs/libzfs_dataset.c#L5357
             let mut res_transposed =
                 Vec::<u8>::with_capacity(number_of_data_sectors * vdev.get_asize());
@@ -255,6 +255,8 @@ impl CompressionMethod {
 }
 
 // NOTE: output_size is currently only used for lzjb
+// NOTE: It is up to the caller to ensure the decompressed data is
+//       of size output_size and valid
 pub fn try_decompress_block(
     block_data: &[u8],
     compression_method: CompressionMethod,
@@ -278,10 +280,12 @@ pub fn try_decompress_block(
             // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
             lz4::lz4_decompress_blocks(&mut block_data[4..comp_size as usize + 4].iter().copied())?
         }
+
         CompressionMethod::Lzjb => {
             lzjb::lzjb_decompress(&mut block_data.iter().copied(), output_size)
                 .map_err(|_| Vec::new())?
         }
+
         _ => {
             use crate::ansi_color::*;
             if cfg!(feature = "debug") {
@@ -294,6 +298,7 @@ pub fn try_decompress_block(
             return Err(Vec::new());
         }
     };
+
     Ok(data)
 }
 

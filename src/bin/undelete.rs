@@ -556,10 +556,6 @@ fn main() {
         panic!("no ashift found for top level vdev!");
     };
 
-    let nvlist::Value::U64(_label_txg) = name_value_pairs["txg"] else {
-        panic!("no txg found in label!");
-    };
-
     println!("{CYAN}Info{WHITE}: Parsed nv_list, {name_value_pairs:?}!");
     println!("{RED}Important{WHITE}: Please make sure the disks are actually in the right order by using the nv_list, i can't actually check that in a reliable way!!!");
 
@@ -581,7 +577,7 @@ fn main() {
     // The sizes are just the most common sizes i have seen while looking at the sizes of compressed indirect blocks, and also 512
     let compression_methods_and_sizes_to_try = [(
         CompressionMethod::Lz4,
-        [512 * 1, 512 * 2, 512 * 3, 512 * 21],
+        [512 * 2, 512 * 3, 512 * 21, 512 * 256],
         [0], /* irrelevant for lz4 */
     )];
 
@@ -592,7 +588,7 @@ fn main() {
     println!("Step 1. Gathering basic fragments");
 
     let mut checkpoint_number = 0;
-    for off in (0..disk_size).step_by(512) {
+    for off in ((disk_size as f64 * 0.8) as u64 / 512 * 512..disk_size).step_by(512) {
         if off % (128 * 1024 * 1024) == 0 && off != 0 {
             println!(
                 "{}% done gathering basic fragments ...",
@@ -600,7 +596,8 @@ fn main() {
             );
         }
 
-        if off % (10 * 1024 * 1024 * 1024) == 0 && off != 0 {
+        if off % (100 * 1024 * 1024 * 1024) == 0 && off != 0 {
+            // Every ~100 GB
             println!("Saving checkpoint...");
             write!(
                 OpenOptions::new()

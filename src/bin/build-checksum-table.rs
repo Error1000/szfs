@@ -1,15 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
     env,
     fmt::Debug,
     fs::{File, OpenOptions},
-    io::Write,
+    io::{Seek, SeekFrom, Write},
 };
-use szfs::{
-    zio::{CompressionMethod, Vdevs},
-    *,
-};
+use szfs::{zio::Vdevs, *};
 #[derive(Debug, Serialize, Deserialize)]
 struct IndirectBlock {
     pub bps: Vec<Option<zio::BlockPointer>>,
@@ -39,6 +35,8 @@ impl IndirectBlock {
         Some(IndirectBlock { bps: res })
     }
 }
+
+type ChecksumTableEntry = u32;
 
 fn main() {
     use szfs::ansi_color::*;
@@ -104,40 +102,40 @@ fn main() {
     label0.set_raw_uberblock_size(2_usize.pow(top_level_ashift as u32));
 
     let disk_size = vdev_raidz.get_size();
-    let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
-    vdevs.insert(0usize, &mut vdev_raidz);
 
+    let mut checksum_map_file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .create(true)
+        .open("checksum-map.bin")
+        .unwrap();
+    let checksum_map_file_size = checksum_map_file.seek(SeekFrom::End(0)).unwrap();
+    let last_off =
+        (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64) * 512;
     println!("RAIDZ total size (GB): {}", disk_size / 1024 / 1024 / 1024);
 
-    let off: u64 = str::parse(env::args().nth(5).unwrap().trim()).unwrap();
-    let psize: usize = str::parse(env::args().nth(6).unwrap().trim()).unwrap();
-    let lsize: usize = str::parse(env::args().nth(7).unwrap().trim()).unwrap();
-    // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
-    let dva = szfs::zio::DataVirtualAddress::from(0, 512, off, false);
-    let res = dva.dereference(&mut vdevs, psize).unwrap();
-    OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open("dva-data-raw.bin")
-        .unwrap()
-        .write_all(&res)
-        .unwrap();
+    println!(
+        "Resuming from offset {}, which is sector {}",
+        last_off,
+        last_off / 512
+    );
 
-    println!("Fletcher4 checksum: {:?}!", fletcher::do_fletcher4(&res));
-    let res_decomp =
-        zio::try_decompress_block(&res, CompressionMethod::Lz4, lsize).unwrap_or_else(|res| res);
+    for off in (last_off..disk_size).step_by(512) {
+        if off % (512 * 1024 * 1024) == 0 && off != 0 {
+            // Every ~512 mb
+            println!(
+                "{}% done building table ...",
+                ((off as f32) / (disk_size as f32)) * 100.0
+            );
+        }
 
-    let indir = IndirectBlock::from_bytes_le(&res_decomp, &mut vdevs).unwrap();
-    write!(
-        OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open("dva-data-indir.json")
-            .unwrap(),
-        "{}",
-        &serde_json::to_string(&indir).unwrap()
-    )
-    .unwrap();
+        let res = vdev_raidz.read_sector(off / 512).unwrap();
+        let checksum = fletcher::do_fletcher4(&res);
+
+        // Truncate to size
+        let to_write: ChecksumTableEntry = checksum[0] as ChecksumTableEntry;
+        checksum_map_file
+            .write_all(&to_write.to_le_bytes())
+            .unwrap();
+    }
 }

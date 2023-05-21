@@ -1,5 +1,3 @@
-#![feature(map_many_mut)]
-
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -14,72 +12,9 @@ use szfs::{
     *,
 };
 
-// NOTE: This code assumes the hash function is perfect
-const hash_function: fn(data: &[u8]) -> [u64; 4] = fletcher::do_fletcher4;
-
 #[derive(Debug, Serialize, Deserialize)]
 struct IndirectBlock {
     pub bps: Vec<Option<zio::BlockPointer>>,
-}
-
-impl IndirectBlock {
-    pub fn from_bytes_le(data: &[u8], vdevs: &mut Vdevs) -> Option<IndirectBlock> {
-        let mut res = Vec::new();
-        let mut nfound = 0;
-        let data = data.chunks(zio::BlockPointer::get_ondisk_size());
-        for potential_bp in data {
-            if let Some(mut bp) =
-                zio::BlockPointer::from_bytes_le(&mut potential_bp.iter().copied())
-            {
-                // Verify block pointer
-                // NOTE: This might not necessarily guarantee that the block pointer
-                // wasn't just misinterpreted random data, especially if
-                // it is an embedded block pointer
-                if bp.dereference(vdevs).is_ok() {
-                    res.push(Some(bp));
-                    nfound += 1;
-                } else {
-                    res.push(None);
-                }
-            } else {
-                res.push(None);
-                continue;
-            }
-        }
-
-        if nfound == 0 {
-            return None;
-        }
-
-        Some(IndirectBlock { bps: res })
-    }
-
-    // Assumes that all block pointers point to blocks of the same size
-    // Will replace a missing block with a chunk of zeros, of the same size as all other blocks
-    pub fn get_data_with_gaps(&mut self, vdevs: &mut Vdevs) -> Option<Vec<u8>> {
-        let mut res = Vec::new();
-        let block_pointer_chunck_size = self
-            .bps
-            .iter_mut()
-            .find(|bp| bp.is_some())
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .parse_logical_size();
-        for bp in self.bps.iter_mut() {
-            if let Some(ref mut bp) = bp {
-                if block_pointer_chunck_size != bp.parse_logical_size() {
-                    return None;
-                }
-                res.extend(bp.dereference(vdevs).unwrap());
-            } else {
-                for _ in 0..block_pointer_chunck_size {
-                    res.push(0u8);
-                }
-            }
-        }
-        Some(res)
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -130,21 +65,20 @@ impl From<FragmentData> for Fragment {
     }
 }
 
-// Tries other recovered files if the first one does not work
 fn aggregated_read_block(
-    file_list: &mut Vec<([u64; 4], Fragment)>,
     block_id: usize,
+    fragments: &mut Vec<([u64; 4], Fragment)>,
     vdevs: &mut Vdevs,
-) -> Option<Vec<u8>> {
-    for (_, frag) in file_list {
-        if let FragmentData::FileDNode(f) = &mut frag.data {
-            if let Ok(res) = f.0.read_block(block_id, vdevs) {
-                return Some(res);
+) -> Result<Vec<u8>, ()> {
+    for f in fragments {
+        if let FragmentData::FileDNode(file) = &mut f.1.data {
+            if let Ok(res) = file.0.read_block(block_id, vdevs) {
+                return Ok(res);
             }
         }
     }
 
-    None
+    Err(())
 }
 
 fn main() {
@@ -195,10 +129,6 @@ fn main() {
         panic!("no ashift found for top level vdev!");
     };
 
-    let nvlist::Value::U64(_label_txg) = name_value_pairs["txg"] else {
-        panic!("no txg found in label!");
-    };
-
     println!("{CYAN}Info{WHITE}: Parsed nv_list, {name_value_pairs:?}!");
     println!("{RED}Important{WHITE}: Please make sure the disks are actually in the right order by using the nv_list, i can't actually check that in a reliable way!!!");
 
@@ -222,6 +152,14 @@ fn main() {
     recovered_fragments.retain(|(_, f)| matches!(f.data, FragmentData::FileDNode(_)));
     // write!(OpenOptions::new().create(true).truncate(true).write(true).open(format!("undelete-filtered-checkpoint.json")).unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
 
+    recovered_fragments.retain(|frag| {
+        if let FragmentData::FileDNode(file) = &frag.1.data {
+            file.0.get_data_size() > 400 * 1024 * 1024 * 1024
+        } else {
+            false
+        }
+    });
+
     recovered_fragments.sort_by(|a, b| {
         let size1 = match &a.1.data {
             FragmentData::FileDNode(f) => f.0.get_data_size(),
@@ -235,29 +173,42 @@ fn main() {
         size2.cmp(&size1)
     });
 
+    // Now the fragments are files, sorted by size in descending order
     for res in recovered_fragments.iter() {
         println!("{:?}", res);
     }
 
-    println!("N fragments: {}", recovered_fragments.len());
+    println!(
+        "N fragments loaded form checkpoint: {}",
+        recovered_fragments.len()
+    );
+
     println!("RAIDZ total size (GB): {}", disk_size / 1024 / 1024 / 1024);
 
-    // NOTE: This is specifically ment for my scenario
+    // NOTE: This is specifically meant for my scenario
     // where i lost a big file that i have recovered the size of
     // in a fs that only ever had 2-3 files
     let file_size: usize = 1084546955827;
+
     // I know the block size of the file system i'm recovering from
     let file_block_size: usize = 128 * 1024;
+
     let mut output_file = OpenOptions::new()
         .write(true)
         .create(true)
         .open("recovered-file.bin")
         .unwrap();
 
-    let nblocks_in_file = file_size / file_block_size;
+    let nblocks_in_file = file_size / file_block_size
+        + if file_size % file_block_size != 0 {
+            1
+        } else {
+            0
+        };
+
     let mut bad_blocks: Vec<usize> = Vec::new();
     for block_id in 0..nblocks_in_file {
-        if block_id % 1000 == 0 {
+        if block_id % 1024 == 0 {
             // Every ~128 mb
             println!(
                 "Copying data {}% done, {} bad blocks so far ...",
@@ -266,13 +217,8 @@ fn main() {
             );
         }
 
-        if bad_blocks.len() >= 100 {
-            println!("Too many bad blocks: {}, quitting!", bad_blocks.len());
-            break;
-        }
-
-        if let Some(block_data) =
-            aggregated_read_block(&mut recovered_fragments, block_id, &mut vdevs)
+        if let Ok(block_data) =
+            aggregated_read_block(block_id, &mut recovered_fragments, &mut vdevs)
         {
             output_file.write_all(&block_data).unwrap();
         } else {
@@ -281,8 +227,9 @@ fn main() {
             output_file.write_all(&vec![0u8; file_block_size]).unwrap();
         }
     }
-    println!("Bad blocks: ");
+
+    println!("Bad blocks, bad blocks, whatcha gonna do, whatcha gonna do when they come for you (checksum failed): ");
     for bad_block_id in bad_blocks {
-        println!("{}", bad_block_id);
+        println!("- {}", bad_block_id);
     }
 }

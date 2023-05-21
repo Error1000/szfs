@@ -13,13 +13,13 @@ name = "fs-walker"
 name = "undelete"
 
 [[bin]]
-name = "undelete-mt"
+name = "build-checksum-table"
+
+[[bin]]
+name = "find-block-with-checksum"
 
 [[bin]]
 name = "read-dva"
-
-[[bin]]
-name = "find-block-by-hash"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

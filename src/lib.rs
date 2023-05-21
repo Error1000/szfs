@@ -265,7 +265,7 @@ impl<'a> VdevRaidz<'a> {
         if let Some(res) = self.cache.get_mut(&sector_index).cloned() {
             if cfg!(feature = "debug") {
                 self.cache_hits += 1;
-                if self.cache_hits % 1_000_000 == 0 {
+                if self.cache_hits % 100_000_000 == 0 {
                     println!(
                         "Info: Raidz sector cache hit rate is {}%!",
                         ((self.cache_hits as f64)

@@ -64,5 +64,6 @@ pub fn lz4_decompress_blocks(data: &mut impl Iterator<Item = u8>) -> Result<Vec<
             lookback_pos += 1;
         }
     }
+
     Ok(output_buf)
 }

@@ -4,28 +4,28 @@ use szfs::{zio::Vdevs, *};
 fn main() {
     use szfs::ansi_color::*;
 
-    let Ok(vdev0) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev0.bin")
+    let Ok(vdev0) = std::fs::OpenOptions::new().read(true).write(false).create(false).open("./test/vdev0.bin")
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev0!");
         return;
     };
     let mut vdev0: VdevFile = vdev0.into();
 
-    let Ok(vdev1) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev1.bin")
+    let Ok(vdev1) = std::fs::OpenOptions::new().read(true).write(false).create(false).open("./test/vdev1.bin")
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev1!");
         return;
     };
     let mut vdev1: VdevFile = vdev1.into();
 
-    let Ok(vdev2) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev2.bin")
+    let Ok(vdev2) = std::fs::OpenOptions::new().read(true).write(false).create(false).open("./test/vdev2.bin")
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev2!");
         return;
     };
     let mut vdev2: VdevFile = vdev2.into();
 
-    let Ok(vdev3) = std::fs::OpenOptions::new().read(true).write(false).create(false).open(&"./test/vdev3.bin")
+    let Ok(vdev3) = std::fs::OpenOptions::new().read(true).write(false).create(false).open("./test/vdev3.bin")
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev3!");
         return;
