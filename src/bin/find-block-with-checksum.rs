@@ -4,16 +4,17 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
 };
 
+use fftconvolve::fftconvolve;
+use ndarray::arr1;
+
 type ChecksumTableEntry = u32;
 
-fn calculate_fletcher4_block_partial_checksum(
-    mut off: u64,
+fn calculate_convolution_vector_for_block(
+    off: u64,
     mut psize: usize,
-    checksum_map_file: &mut File,
-    file_cache: &mut lru::LruCache<u64, ChecksumTableEntry>,
     is_raidz1: bool,
     raidz_ndevices: usize,
-) -> Option<ChecksumTableEntry> {
+) -> Vec<bool> {
     let mut column_mapping = (0..raidz_ndevices).collect::<Vec<usize>>();
 
     // Source: https://github.com/openzfs/zfs/blob/master/module/zfs/vdev_raidz.c#L398
@@ -22,56 +23,57 @@ fn calculate_fletcher4_block_partial_checksum(
         column_mapping.swap(0, 1);
     }
 
-    off /= 512;
-    off *= core::mem::size_of::<ChecksumTableEntry>() as u64;
     psize /= 512;
-    // Note: Even though the checksums are added in the wrong
-    // order ( row major instead of column major )
-    // it doesn't matter because it's addition
-    let mut final_checksum = 0u64;
+    let mut res = Vec::new();
     for index in 0.. {
         let column = index % raidz_ndevices;
         let mapped_column = column_mapping[column];
 
         if mapped_column == 0 {
-            off += core::mem::size_of::<ChecksumTableEntry>() as u64;
             // parity blocks are not included
+            res.push(false);
             continue;
         }
 
-        let sector_checksum = if let Some(val) = file_cache.get(&off) {
-            *val
-        } else {
-            if checksum_map_file.seek(SeekFrom::Start(off)).is_err() {
-                return None;
-            }
-            let mut raw_checksum = [0u8; core::mem::size_of::<ChecksumTableEntry>()];
-            if checksum_map_file.read(&mut raw_checksum).is_err() {
-                return None;
-            }
+        res.push(true);
 
-            let val = ChecksumTableEntry::from_le_bytes(raw_checksum);
-            file_cache.push(off, val);
-            val
-        };
-
-        final_checksum = final_checksum.wrapping_add(sector_checksum as u64);
         psize -= 1;
         if psize == 0 {
             break;
         }
-
-        off += core::mem::size_of::<ChecksumTableEntry>() as u64;
     }
 
-    Some(final_checksum as ChecksumTableEntry)
+    res
+}
+
+fn calculate_fletcher4_partial_block_checksums(
+    off: u64,
+    psize: usize,
+    is_raidz1: bool,
+    raidz_ndevices: usize,
+    sector_checksums: &[ChecksumTableEntry],
+) -> Vec<u64> {
+    let cv: Vec<f64> =
+        calculate_convolution_vector_for_block(off, psize, is_raidz1, raidz_ndevices)
+            .into_iter()
+            .map(|val| val as u8 as f64)
+            .rev()
+            .collect();
+    let sv: Vec<f64> = sector_checksums.iter().map(|val| *val as f64).collect();
+    let res = fftconvolve(&arr1(&sv), &arr1(&cv), fftconvolve::Mode::Full).unwrap();
+    let mut res: Vec<u64> = res
+        .into_iter()
+        .skip(cv.len() - 1)
+        .map(|val| val.round() as u64)
+        .collect();
+
+    res.resize(sector_checksums.len() - (cv.len() - 1), 0);
+    res
 }
 
 fn main() {
     let mut checksum_map_file = File::open("checksum-map.bin").unwrap();
     let checksum_map_file_size = checksum_map_file.seek(SeekFrom::End(0)).unwrap();
-    let mut file_cache: lru::LruCache<u64, ChecksumTableEntry> =
-        lru::LruCache::new(1000.try_into().unwrap());
 
     let disk_size =
         (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64) * 512;
@@ -91,26 +93,51 @@ fn main() {
         panic!("Couldn't parse hash!");
     };
 
+    let partial_checksum_to_look_for = hsh[0] as ChecksumTableEntry;
+
     let mut npotential_matches = 0;
-    for off in (0..disk_size).step_by(512) {
-        if off % (512 * 1024 * 1024) == 0 && off != 0 {
-            // Every ~512 mb
+    let raidz_ndevices = 4;
+    let is_raidz1 = true;
+
+    for off in (0..disk_size).step_by(2048 * 512) {
+        if off % (4 * 1024 * 1024 * 1024) == 0 && off != 0 {
+            // Every ~4 gb
             println!(
                 "{}% done looking for checksum ...",
                 ((off as f32) / (disk_size as f32)) * 100.0
             );
         }
 
-        if let Some(block_checksum) = calculate_fletcher4_block_partial_checksum(
+        let mut hunk = vec![
+            0u8;
+            (2048 + psize / 512 + psize / 512 / (raidz_ndevices - 1) + 1)
+                * core::mem::size_of::<ChecksumTableEntry>()
+        ];
+
+        let checkum_file_offset = (off / 512) * core::mem::size_of::<ChecksumTableEntry>() as u64;
+        checksum_map_file
+            .seek(SeekFrom::Start(checkum_file_offset))
+            .unwrap();
+        let _ = checksum_map_file.read(&mut hunk).unwrap();
+        let mut checksums = Vec::<ChecksumTableEntry>::new();
+        for index in (0..hunk.len()).step_by(core::mem::size_of::<ChecksumTableEntry>()) {
+            checksums.push(ChecksumTableEntry::from_le_bytes(
+                hunk[index..index + core::mem::size_of::<ChecksumTableEntry>()]
+                    .try_into()
+                    .unwrap(),
+            ));
+        }
+        let res = calculate_fletcher4_partial_block_checksums(
             off,
             psize,
-            &mut checksum_map_file,
-            &mut file_cache,
-            true,
-            4,
-        ) {
-            if block_checksum == hsh[0] as ChecksumTableEntry {
-                println!("Found possible match at offset {}!", off);
+            is_raidz1,
+            raidz_ndevices,
+            &checksums,
+        );
+
+        for ind in 0..res.len() {
+            if res[ind] as u32 == partial_checksum_to_look_for {
+                println!("Found potential match at {}!", off + (ind * 512) as u64);
                 npotential_matches += 1;
             }
         }
