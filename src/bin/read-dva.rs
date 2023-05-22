@@ -113,7 +113,7 @@ fn main() {
     let psize: usize = str::parse(env::args().nth(6).unwrap().trim()).unwrap();
     let lsize: usize = str::parse(env::args().nth(7).unwrap().trim()).unwrap();
     // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
-    let dva = szfs::zio::DataVirtualAddress::from(0, 512, off, false);
+    let dva = szfs::zio::DataVirtualAddress::from(0, off, false);
     let res = dva.dereference(&mut vdevs, psize).unwrap();
     OpenOptions::new()
         .create(true)

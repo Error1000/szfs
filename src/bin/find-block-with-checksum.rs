@@ -13,6 +13,7 @@ fn calculate_convolution_vector_for_block(
     off: u64,
     mut psize: usize,
     is_raidz1: bool,
+    sector_size: usize,
     raidz_ndevices: usize,
 ) -> Vec<bool> {
     let mut column_mapping = (0..raidz_ndevices).collect::<Vec<usize>>();
@@ -23,7 +24,7 @@ fn calculate_convolution_vector_for_block(
         column_mapping.swap(0, 1);
     }
 
-    psize /= 512;
+    psize /= sector_size;
     let mut res = Vec::new();
     for index in 0.. {
         let column = index % raidz_ndevices;
@@ -51,10 +52,11 @@ fn calculate_fletcher4_partial_block_checksums(
     psize: usize,
     is_raidz1: bool,
     raidz_ndevices: usize,
+    sector_size: usize,
     sector_checksums: &[ChecksumTableEntry],
 ) -> Vec<u64> {
     let cv: Vec<f64> =
-        calculate_convolution_vector_for_block(off, psize, is_raidz1, raidz_ndevices)
+        calculate_convolution_vector_for_block(off, psize, is_raidz1, sector_size, raidz_ndevices)
             .into_iter()
             .map(|val| val as u8 as f64)
             .rev()
@@ -74,13 +76,17 @@ fn calculate_fletcher4_partial_block_checksums(
 fn main() {
     let mut checksum_map_file = File::open("checksum-map.bin").unwrap();
     let checksum_map_file_size = checksum_map_file.seek(SeekFrom::End(0)).unwrap();
+    let psize: usize = str::parse(env::args().nth(1).unwrap().trim()).unwrap();
+    let sector_size: u64 = str::parse(env::args().nth(2).unwrap().trim()).unwrap();
 
     let disk_size =
-        (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64) * 512;
+        (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64) * sector_size;
 
-    println!("RAIDZ total size (GB): {}", disk_size / 1024 / 1024 / 1024);
+    println!(
+        "RAIDZ total size (GB): {}",
+        disk_size as f64 / 1024.0 / 1024.0 / 1024.0
+    );
 
-    let psize: usize = str::parse(env::args().nth(1).unwrap().trim()).unwrap();
     let mut input_line = String::new();
     std::io::stdout().flush().unwrap();
     print!("Please enter checksum of block to find: ");
@@ -99,7 +105,10 @@ fn main() {
     let raidz_ndevices = 4;
     let is_raidz1 = true;
 
-    for off in (0..disk_size).step_by(2048 * 512) {
+    let block_size_upper_bound =
+        psize / sector_size as usize + psize / sector_size as usize / (raidz_ndevices - 1) + 1;
+
+    for off in (0..disk_size).step_by(1024 * 1024) {
         if off % (4 * 1024 * 1024 * 1024) == 0 && off != 0 {
             // Every ~4 gb
             println!(
@@ -108,15 +117,19 @@ fn main() {
             );
         }
 
+        // We over-read because the convolution needs more than
+        // 1 mb of sectors to calculate the partial checksum
+        // of the block starting at each one of the sectors
         let mut hunk = vec![
             0u8;
-            (2048 + psize / 512 + psize / 512 / (raidz_ndevices - 1) + 1)
+            (1024 * 1024 / sector_size as usize + block_size_upper_bound)
                 * core::mem::size_of::<ChecksumTableEntry>()
         ];
 
-        let checkum_file_offset = (off / 512) * core::mem::size_of::<ChecksumTableEntry>() as u64;
+        let checksum_file_offset =
+            (off / sector_size) * core::mem::size_of::<ChecksumTableEntry>() as u64;
         checksum_map_file
-            .seek(SeekFrom::Start(checkum_file_offset))
+            .seek(SeekFrom::Start(checksum_file_offset))
             .unwrap();
         let _ = checksum_map_file.read(&mut hunk).unwrap();
         let mut checksums = Vec::<ChecksumTableEntry>::new();
@@ -127,17 +140,22 @@ fn main() {
                     .unwrap(),
             ));
         }
+
         let res = calculate_fletcher4_partial_block_checksums(
             off,
             psize,
             is_raidz1,
+            sector_size as usize,
             raidz_ndevices,
             &checksums,
         );
 
         for ind in 0..res.len() {
             if res[ind] as u32 == partial_checksum_to_look_for {
-                println!("Found potential match at {}!", off + (ind * 512) as u64);
+                println!(
+                    "Found potential match at {}!",
+                    off + (ind as u64) * sector_size
+                );
                 npotential_matches += 1;
             }
         }

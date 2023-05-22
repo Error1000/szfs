@@ -4,6 +4,24 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'find-block-with-checksum'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=find-block-with-checksum",
+                    "--package=szfs",
+                ],
+                "filter": {
+                    "name": "find-block-with-checksum",
+                    "kind": "bin"
+                }
+            },
+            "args": ["2048"],
+            "cwd": "${workspaceFolder}"  
+        },
 
         {
             "type": "lldb",

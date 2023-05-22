@@ -25,6 +25,7 @@ pub mod fletcher;
 pub mod lz4;
 pub mod lzjb;
 pub mod nvlist;
+pub mod yolo_block_recovery;
 pub mod zap;
 pub mod zil;
 pub mod zio;
@@ -46,10 +47,9 @@ pub mod ansi_color {
 // 5. Implement all fat zap values
 // 6. Implement all system attributes
 // 7. Don't just skip the parity sectors in RAIDZ
-// 8. Make sure we support sector sizes bigger than 512 bytes
-// 9. Test RAIDZ writing, and in general implement writing
-// 10. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
-// 11. Make sure usage of "as" is correct ( probably should use .try_into()? or something similar in some places )
+// 8. Test RAIDZ writing, and in general implement writing
+// 9. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
+// 10. Make sure usage of "as" is correct ( probably should use .try_into()? or something similar in some places )
 
 pub struct RaidzInfo {
     ndevices: usize,
@@ -69,45 +69,6 @@ pub trait Vdev {
     fn get_nlables(&mut self) -> usize;
     fn get_asize(&self) -> usize;
     fn get_raidz_info(&self) -> Option<RaidzInfo>;
-}
-
-#[derive(Debug)]
-pub struct VdevDisk {
-    device: File,
-    disk_size: u64,
-}
-
-impl From<File> for VdevDisk {
-    fn from(mut f: File) -> Self {
-        let disk_size = f.seek(SeekFrom::End(0)).unwrap();
-        Self {
-            device: f,
-            disk_size,
-        }
-    }
-}
-
-impl VdevRaw for VdevDisk {
-    fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
-        let mut buf = vec![0u8; amount_in_bytes];
-        self.device
-            .seek(SeekFrom::Start(offset_in_bytes + 2048 * 512))
-            .map_err(|_| ())?;
-        self.device.read(&mut buf).map_err(|_| ())?;
-        Ok(buf)
-    }
-
-    fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()> {
-        self.device
-            .seek(SeekFrom::Start(offset_in_bytes + 2048 * 512))
-            .map_err(|_| ())?;
-        self.device.write(data).map_err(|_| ())?;
-        Ok(())
-    }
-
-    fn get_raw_size(&self) -> u64 {
-        self.disk_size
-    }
 }
 
 #[derive(Debug)]
@@ -131,20 +92,50 @@ impl VdevRaw for VdevFile {
         let mut buf = vec![0u8; amount_in_bytes];
         self.device
             .seek(SeekFrom::Start(offset_in_bytes))
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                if cfg!(feature = "debug") {
+                    use crate::ansi_color::*;
+                    println!("{YELLOW}Warning{WHITE}: The read at offset {:?} for device {:?} failed to seek!", offset_in_bytes, self);
+                }
+            })?;
+
         if self.device.read(&mut buf).map_err(|_| ())? != amount_in_bytes {
+            if cfg!(feature = "debug") {
+                use crate::ansi_color::*;
+                println!(
+                    "{YELLOW}Warning{WHITE}: The read at {:?} for device {:?} failed!",
+                    offset_in_bytes, self
+                );
+            }
+
             return Err(());
         }
+
         Ok(buf)
     }
 
     fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()> {
         self.device
             .seek(SeekFrom::Start(offset_in_bytes))
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                if cfg!(feature = "debug") {
+                    use crate::ansi_color::*;
+                    println!("{YELLOW}Warning{WHITE}: The write at offset {:?} for device {:?} failed to seek!", offset_in_bytes, self);
+                }
+            })?;
+
         if self.device.write(data).map_err(|_| ())? != data.len() {
+            if cfg!(feature = "debug") {
+                use crate::ansi_color::*;
+                println!(
+                    "{YELLOW}Warning{WHITE}: The write at {:?} for device {:?} failed!",
+                    offset_in_bytes, self
+                );
+            }
+
             return Err(());
         }
+
         Ok(())
     }
 
@@ -175,23 +166,33 @@ where
     }
 
     fn read(&mut self, mut offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
+        offset_in_bytes += 4 * 1024 * 1024;
+
         // 4 mb at the beginning and 2 labels at the end
-        if offset_in_bytes + amount_in_bytes as u64 > self.get_size() {
+        if offset_in_bytes + amount_in_bytes as u64
+            > self.get_raw_size() - /* ending lables */ 2 * 256 * 1024
+        {
             use ansi_color::*;
             println!(
-                "{YELLOW}Warning{WHITE}: Offset: {:?} is past the end of device {:?}!",
-                offset_in_bytes, self
+                "{YELLOW}Warning{WHITE}: Trying to read {:?} bytes from offset: {:?} would go outside the device {:?}!",
+                amount_in_bytes,
+                offset_in_bytes,
+                self
             );
+
             return Err(());
         }
 
-        offset_in_bytes += 4 * 1024 * 1024;
         self.read_raw(offset_in_bytes, amount_in_bytes)
     }
 
     fn write(&mut self, mut offset_in_bytes: u64, data: &[u8]) -> Result<(), ()> {
+        offset_in_bytes += 4 * 1024 * 1024;
+
         // 4 mb at the beginning and 2 labels at the end
-        if offset_in_bytes + data.len() as u64 > self.get_size() {
+        if offset_in_bytes + data.len() as u64
+            > self.get_raw_size() - /* ending lables */ 2*256*1024
+        {
             use ansi_color::*;
             println!(
                 "{YELLOW}Warning{WHITE}: Offset: {:?} is past the end of device {:?}!",
@@ -199,7 +200,6 @@ where
             );
             return Err(());
         }
-        offset_in_bytes += 4 * 1024 * 1024;
         self.write_raw(offset_in_bytes, data)
     }
 
@@ -216,8 +216,8 @@ where
         match label_index {
             0 => self.read_raw(0, 256 * 1024),
             1 => self.read_raw(256 * 1024, 256 * 1024),
-            2 => self.read_raw(self.get_size() + 4 * 1024 * 1024, 256 * 1024),
-            3 => self.read_raw(self.get_size() + 4 * 1024 * 1024 + 256 * 1024, 256 * 1024),
+            2 => self.read_raw(self.get_raw_size() - 2 * 256 * 1024, 256 * 1024),
+            3 => self.read_raw(self.get_raw_size() - 1 * 256 * 1024, 256 * 1024),
             _ => Err(()),
         }
     }
@@ -276,6 +276,7 @@ impl<'a> VdevRaidz<'a> {
             }
             return Ok(res);
         }
+
         if cfg!(feature = "debug") {
             self.cache_misses += 1;
         }
@@ -328,6 +329,7 @@ impl Vdev for VdevRaidz<'_> {
         if amount_in_bytes == 0 {
             return Ok(Vec::new());
         }
+
         let mut result: Vec<u8> = Vec::with_capacity(amount_in_bytes + self.get_asize() * 2);
         let first_sector_index = offset_in_bytes / (self.get_asize() as u64);
         let first_sector_offset = offset_in_bytes % (self.get_asize() as u64);
@@ -361,6 +363,7 @@ impl Vdev for VdevRaidz<'_> {
         if data.is_empty() {
             return Ok(());
         }
+
         let mut bytes_written = 0;
         let first_sector_index = offset_in_bytes / (self.get_asize() as u64);
         let first_sector_offset = (offset_in_bytes % (self.get_asize() as u64)) as usize;

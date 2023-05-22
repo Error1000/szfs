@@ -1,4 +1,6 @@
 /target
 /test
 Cargo.lock
-*.json
+/*.json
+/*.bin
+/*.bin.tags

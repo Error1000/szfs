@@ -102,6 +102,7 @@ fn main() {
     label0.set_raw_uberblock_size(2_usize.pow(top_level_ashift as u32));
 
     let disk_size = vdev_raidz.get_size();
+    let sector_size = vdev_raidz.get_asize() as u64;
 
     let mut checksum_map_file = OpenOptions::new()
         .write(true)
@@ -111,16 +112,20 @@ fn main() {
         .unwrap();
     let checksum_map_file_size = checksum_map_file.seek(SeekFrom::End(0)).unwrap();
     let last_off =
-        (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64) * 512;
-    println!("RAIDZ total size (GB): {}", disk_size / 1024 / 1024 / 1024);
-
+        (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64) * sector_size;
     println!(
-        "Resuming from offset {}, which is sector {}",
-        last_off,
-        last_off / 512
+        "RAIDZ total size (GB): {}",
+        disk_size as f64 / 1024.0 / 1024.0 / 1024.0
     );
 
-    for off in (last_off..disk_size).step_by(512) {
+    println!(
+        "Resuming from offset {}, which is sector {}, with sector size being: {}",
+        last_off,
+        last_off / sector_size,
+        sector_size
+    );
+
+    for off in (last_off..disk_size).step_by(sector_size as usize) {
         if off % (512 * 1024 * 1024) == 0 && off != 0 {
             // Every ~512 mb
             println!(
@@ -129,7 +134,7 @@ fn main() {
             );
         }
 
-        let res = vdev_raidz.read_sector(off / 512).unwrap();
+        let res = vdev_raidz.read(off, sector_size as usize).unwrap();
         let checksum = fletcher::do_fletcher4(&res);
 
         // Truncate to size

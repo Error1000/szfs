@@ -515,28 +515,28 @@ fn main() {
         println!("{RED}Fatal{WHITE}: Failed to open vdev0!");
         return;
     };
-    let mut vdev0: VdevDisk = vdev0.into();
+    let mut vdev0: VdevFile = vdev0.into();
 
     let Ok(vdev1) = File::open(env::args().nth(2).unwrap().trim())
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev1!");
         return;
     };
-    let mut vdev1: VdevDisk = vdev1.into();
+    let mut vdev1: VdevFile = vdev1.into();
 
     let Ok(vdev2) = File::open(env::args().nth(3).unwrap().trim())
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev2!");
         return;
     };
-    let mut vdev2: VdevDisk = vdev2.into();
+    let mut vdev2: VdevFile = vdev2.into();
 
     let Ok(vdev3) = File::open(env::args().nth(4).unwrap().trim())
     else {
         println!("{RED}Fatal{WHITE}: Failed to open vdev3!");
         return;
     };
-    let mut vdev3: VdevDisk = vdev3.into();
+    let mut vdev3: VdevFile = vdev3.into();
 
     // For now just use the first label
     let mut label0 = VdevLabel::from_bytes(
@@ -616,7 +616,7 @@ fn main() {
         }
 
         // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
-        let dva = szfs::zio::DataVirtualAddress::from(0, 512, off, false);
+        let dva = szfs::zio::DataVirtualAddress::from(0, off, false);
 
         // Since we don't know what the size of the block(if there is any) at this offset might be
         // we just try all possible options

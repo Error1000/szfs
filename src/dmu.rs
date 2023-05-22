@@ -171,7 +171,7 @@ pub struct DNodeBase {
     n_indirect_levels: u8,
     checksum_method: zio::ChecksumMethod,
     compression_method: zio::CompressionMethod,
-    data_blocksize_in_sectors: u16,
+    data_blocksize_in_512b_sectors: u16,
     num_slots: u8, // A big dnode may take up multiple dnode "slots", a dnode slot is 512 bytes
     max_indirect_block_id: u64,
     total_allocated: u64,
@@ -233,7 +233,7 @@ impl DNodeBase {
         let checksum_method = ChecksumMethod::from_value(data.next()?.into())?;
         let compression_method = CompressionMethod::from_value(data.next()?.into())?;
         let flags = data.next()?; // Ignore 1 padding byte ( dn_flags in newer versions )
-        let data_blocksize_in_sectors = data.read_u16_le()?;
+        let data_blocksize_in_512b_sectors = data.read_u16_le()?;
         let bonus_data_len = data.read_u16_le()?;
         let extra_slots = data.next()?;
         data.skip_n_bytes(3)?; // Ignore 3 padding bytes
@@ -287,6 +287,7 @@ impl DNodeBase {
         let total_size: usize = 64
             + usize::from(n_block_pointers) * zio::BlockPointer::get_ondisk_size()
             + usize::from(bonus_data_len);
+
         // Round up the size to the next multiple of 512 bytes
         let rounded_up_total_size = if total_size % 512 == 0 {
             total_size
@@ -320,7 +321,7 @@ impl DNodeBase {
                 n_indirect_levels,
                 checksum_method,
                 compression_method,
-                data_blocksize_in_sectors,
+                data_blocksize_in_512b_sectors,
                 num_slots: extra_slots + 1,
                 max_indirect_block_id,
                 total_allocated,
@@ -334,7 +335,7 @@ impl DNodeBase {
     }
 
     pub fn parse_data_block_size(&self) -> usize {
-        usize::from(self.data_blocksize_in_sectors) * 512
+        usize::from(self.data_blocksize_in_512b_sectors) * 512
     }
 
     pub fn parse_indirect_block_size(&self) -> usize {
@@ -681,6 +682,8 @@ impl ObjSet {
     }
 
     pub fn get_dnode_at(&mut self, index: usize, vdevs: &mut Vdevs) -> Option<DNode> {
+        // A DNode slot is 512 bytes in size
+
         let mut data = self.metadnode.read((index * 512) as u64, 512, vdevs).ok()?;
         let dnode_slots = DNodeBase::get_n_slots_from_bytes_le(data.iter().copied())?;
         data.extend(

@@ -1,12 +1,12 @@
-use crate::{byte_iter::ByteIter, dmu, fletcher, lz4, lzjb, Vdev};
+use crate::{byte_iter::ByteIter, dmu, fletcher, lz4, lzjb, yolo_block_recovery, Vdev};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Debug};
 
 #[derive(Serialize, Deserialize)]
 pub struct DataVirtualAddress {
     vdev_id: u32,
-    data_allocated_size_minus_one_in_sectors: u32, // technically a u24
-    offset_in_sectors: u64, // 1 sector = 512 bytes, offset is after the labels and the boot block
+    data_allocated_size_minus_one_in_512b_sectors: u32, // technically a u24
+    offset_in_512b_sectors: u64, // offset is after the labels and the boot block
     is_gang: bool,
 }
 
@@ -28,16 +28,11 @@ impl DataVirtualAddress {
         core::mem::size_of::<u64>() * 2
     }
 
-    pub fn from(
-        vdev_id: u32,
-        asize_in_bytes: u32,
-        offset_in_bytes: u64,
-        is_gang: bool,
-    ) -> DataVirtualAddress {
+    pub fn from(vdev_id: u32, offset_in_bytes: u64, is_gang: bool) -> DataVirtualAddress {
         DataVirtualAddress {
             vdev_id,
-            data_allocated_size_minus_one_in_sectors: (asize_in_bytes / 512) - 1,
-            offset_in_sectors: offset_in_bytes / 512,
+            data_allocated_size_minus_one_in_512b_sectors: 0, /* unused */
+            offset_in_512b_sectors: offset_in_bytes / 512,
             is_gang,
         }
     }
@@ -53,8 +48,8 @@ impl DataVirtualAddress {
         }
         Some(DataVirtualAddress {
             vdev_id,
-            data_allocated_size_minus_one_in_sectors: (grid_and_asize & 0xFF_FF_FF_00) >> 8, // ignore GRID as it is reserved
-            offset_in_sectors: offset_and_gang_bit & ((1 << 63) - 1), // bit 64 is the gang bit
+            data_allocated_size_minus_one_in_512b_sectors: (grid_and_asize & 0xFF_FF_FF_00) >> 8, // ignore GRID as it is reserved
+            offset_in_512b_sectors: offset_and_gang_bit & ((1 << 63) - 1), // bit 64 is the gang bit
             is_gang: offset_and_gang_bit & (1 << 63) != 0,
         })
     }
@@ -62,12 +57,12 @@ impl DataVirtualAddress {
     // Returns: allocated size in bytes
     pub fn parse_allocated_size(&self) -> u64 {
         // All sizes are stored as the number of 512 byte sectors (minus one) needed to represent the size of this block. ( http://www.giis.co.in/Zfs_ondiskformat.pdf ( section 2.6 ) )
-        (self.data_allocated_size_minus_one_in_sectors as u64 + 1) * 512
+        (self.data_allocated_size_minus_one_in_512b_sectors as u64 + 1) * 512
     }
 
     // Returns: offset in bytes from beginning of vdev
     pub fn parse_offset(&self) -> u64 {
-        self.offset_in_sectors * 512
+        self.offset_in_512b_sectors * 512
     }
 
     pub fn dereference(&self, vdevs: &mut Vdevs, size: usize) -> Result<Vec<u8>, ()> {
@@ -328,8 +323,8 @@ pub struct NormalBlockPointer {
     typ: dmu::ObjType,
     checksum_method: ChecksumMethod,
     compression_method: CompressionMethod,
-    physical_size_in_sectors_minus_one: u16,
-    logical_size_in_sectors_minus_one: u16,
+    physical_size_in_512b_sectors_minus_one: u16,
+    logical_size_in_512b_sectors_minus_one: u16,
     checksum: [u64; 4],
 }
 
@@ -407,8 +402,8 @@ impl NormalBlockPointer {
             compression_method: CompressionMethod::from_value(
                 ((info >> 32) & 0b0111_1111) as usize,
             )?,
-            physical_size_in_sectors_minus_one: ((info >> 16) & 0b1111_1111_1111_1111) as u16,
-            logical_size_in_sectors_minus_one: ((info >> 0) & 0b1111_1111_1111_1111) as u16,
+            physical_size_in_512b_sectors_minus_one: ((info >> 16) & 0b1111_1111_1111_1111) as u16,
+            logical_size_in_512b_sectors_minus_one: ((info >> 0) & 0b1111_1111_1111_1111) as u16,
             checksum,
         })
     }
@@ -416,13 +411,13 @@ impl NormalBlockPointer {
     // Returns: Logical size of the data pointed to by the block pointer, in bytes
     pub fn parse_logical_size(&self) -> u64 {
         // All sizes are stored as the number of 512 byte sectors (minus one) needed to represent the size of this block. ( http://www.giis.co.in/Zfs_ondiskformat.pdf ( section 2.6 ) )
-        (self.logical_size_in_sectors_minus_one as u64 + 1) * 512
+        (self.logical_size_in_512b_sectors_minus_one as u64 + 1) * 512
     }
 
     // Returns: Physical size of the data pointed to by the block pointer, in bytes
     pub fn parse_physical_size(&self) -> u64 {
         // All sizes are stored as the number of 512 byte sectors (minus one) needed to represent the size of this block. ( http://www.giis.co.in/Zfs_ondiskformat.pdf ( section 2.6 ) )
-        (self.physical_size_in_sectors_minus_one as u64 + 1) * 512
+        (self.physical_size_in_512b_sectors_minus_one as u64 + 1) * 512
     }
 
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data pointed to by the gang blocks once stitched together, and it is done before decompression
@@ -476,6 +471,37 @@ impl NormalBlockPointer {
             // use crate::ansi_color::*;
             // println!("{CYAN}Info{WHITE}: Using dva: {:?}", dva);
             return Ok(data);
+        }
+
+        if cfg!(feature = "yolo") && self.checksum_method == ChecksumMethod::Fletcher4 {
+            if let Some(res_off) = yolo_block_recovery::find_block_with_fletcher4_checksum(
+                vdevs,
+                &self.checksum,
+                self.parse_physical_size() as usize,
+            ) {
+                let dva = DataVirtualAddress::from(0 /* just a guess */, res_off, false);
+                if let Ok(Ok(data)) = dva
+                    .dereference(vdevs, self.parse_physical_size() as usize)
+                    .map(|data| {
+                        try_decompress_block(
+                            &data,
+                            self.compression_method,
+                            self.parse_logical_size() as usize,
+                        )
+                    })
+                {
+                    if data.len() != self.parse_logical_size() as usize {
+                        use crate::ansi_color::*;
+                        if cfg!(feature = "debug") {
+                            println!("{YELLOW}Warning{WHITE}: Normal block pointer doesn't point to as much data as it says it should, i refuse to return it's data!");
+                        }
+
+                        return Err(());
+                    }
+
+                    return Ok(data);
+                };
+            }
         }
 
         if cfg!(feature = "debug") {
