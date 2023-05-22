@@ -16,7 +16,7 @@ use crate::{
 
 type ChecksumTableEntry = u32;
 
-fn calculate_convolution_vector_for_block(
+pub fn calculate_convolution_vector_for_block(
     off: u64,
     mut psize: usize,
     is_raidz1: bool,
@@ -54,7 +54,7 @@ fn calculate_convolution_vector_for_block(
     res
 }
 
-fn calculate_fletcher4_partial_block_checksums(
+pub fn calculate_fletcher4_partial_block_checksums(
     off: u64,
     psize: usize,
     is_raidz1: bool,

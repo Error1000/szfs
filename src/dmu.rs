@@ -252,7 +252,7 @@ impl DNodeBase {
         }
 
         // Currently there must be at least one block pointer and at most 3
-        if (1..=3).contains(&n_block_pointers) {
+        if !(1..=3).contains(&n_block_pointers) {
             use crate::ansi_color::*;
             if cfg!(feature = "debug") {
                 println!("{YELLOW}Warning{WHITE}: Tried to parse a dnode with {} block pointers, sanity check failed!", n_block_pointers);
