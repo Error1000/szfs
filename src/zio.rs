@@ -268,12 +268,16 @@ pub fn try_decompress_block(
             let comp_size = u32::from_be_bytes(block_data[0..4].try_into().unwrap());
 
             // Note: comp_size+4 may be equal to block_data.len(), just not greater
-            if comp_size as usize + 4 > block_data.len() {
+            if usize::try_from(comp_size).unwrap() + 4 > block_data.len() {
                 return Err(Vec::new());
             }
 
             // The data contains the size of the input as a big endian 32 bit int at the beginning before the lz4 stream starts
-            lz4::lz4_decompress_blocks(&mut block_data[4..comp_size as usize + 4].iter().copied())?
+            lz4::lz4_decompress_blocks(
+                &mut block_data[4..usize::try_from(comp_size).unwrap() + 4]
+                    .iter()
+                    .copied(),
+            )?
         }
 
         CompressionMethod::Lzjb => {
@@ -423,7 +427,7 @@ impl NormalBlockPointer {
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data pointed to by the gang blocks once stitched together, and it is done before decompression
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
         for dva in self.dvas.iter().filter_map(|val| val.as_ref()) {
-            let Ok(data) = dva.dereference(vdevs, self.parse_physical_size() as usize) else {
+            let Ok(data) = dva.dereference(vdevs, usize::try_from(self.parse_physical_size()).unwrap()) else {
                 if cfg!(feature = "debug") {
                     use crate::ansi_color::*;
                     println!("{YELLOW}Warning{WHITE}: Invalid dva {:?}", dva);
@@ -455,11 +459,11 @@ impl NormalBlockPointer {
                 continue;
             }
 
-            let Ok(data) = try_decompress_block(&data, self.compression_method, self.parse_logical_size() as usize) else {
+            let Ok(data) = try_decompress_block(&data, self.compression_method, usize::try_from(self.parse_logical_size()).unwrap()) else {
                 continue;
             };
 
-            if data.len() != self.parse_logical_size() as usize {
+            if data.len() as u64 != self.parse_logical_size() {
                 use crate::ansi_color::*;
                 if cfg!(feature = "debug") {
                     println!("{YELLOW}Warning{WHITE}: Normal block pointer doesn't point to as much data as it says it should, i refuse to return it's data!");
@@ -477,20 +481,20 @@ impl NormalBlockPointer {
             if let Some(res_off) = yolo_block_recovery::find_block_with_fletcher4_checksum(
                 vdevs,
                 &self.checksum,
-                self.parse_physical_size() as usize,
+                usize::try_from(self.parse_physical_size()).unwrap(),
             ) {
                 let dva = DataVirtualAddress::from(0 /* just a guess */, res_off, false);
                 if let Ok(Ok(data)) = dva
-                    .dereference(vdevs, self.parse_physical_size() as usize)
+                    .dereference(vdevs, usize::try_from(self.parse_physical_size()).unwrap())
                     .map(|data| {
                         try_decompress_block(
                             &data,
                             self.compression_method,
-                            self.parse_logical_size() as usize,
+                            usize::try_from(self.parse_logical_size()).unwrap(),
                         )
                     })
                 {
-                    if data.len() != self.parse_logical_size() as usize {
+                    if data.len() as u64 != self.parse_logical_size() {
                         use crate::ansi_color::*;
                         if cfg!(feature = "debug") {
                             println!("{YELLOW}Warning{WHITE}: Normal block pointer doesn't point to as much data as it says it should, i refuse to return it's data!");
@@ -615,15 +619,15 @@ impl EmbeddedBlockPointer {
     pub fn dereference(&mut self) -> Result<Vec<u8>, ()> {
         let mut data = self.payload.clone();
 
-        if data.len() > self.parse_physical_size() as usize {
-            data.resize(self.parse_physical_size() as usize, 0);
+        if data.len() as u64 > self.parse_physical_size() {
+            data.resize(usize::try_from(self.parse_physical_size()).unwrap(), 0);
         }
 
-        let Ok(data) = try_decompress_block(&data, self.compression_method, self.parse_logical_size() as usize) else {
+        let Ok(data) = try_decompress_block(&data, self.compression_method, usize::try_from(self.parse_logical_size()).unwrap()) else {
             return Err(());
         };
 
-        if data.len() != self.parse_logical_size() as usize {
+        if data.len() as u64 != self.parse_logical_size() {
             use crate::ansi_color::*;
             if cfg!(feature = "debug") {
                 println!("{YELLOW}Warning{WHITE}: Embedded block pointer doesn't contain as much data as it says it should, i refuse to return it's data!");

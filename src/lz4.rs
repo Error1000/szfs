@@ -36,7 +36,7 @@ pub fn lz4_decompress_blocks(data: &mut impl Iterator<Item = u8>) -> Result<Vec<
             }
         };
 
-        if lookback as usize > output_buf.len() || lookback == 0 {
+        if usize::try_from(lookback).unwrap() > output_buf.len() || lookback == 0 {
             // Invalid lz4 block
             return Err(output_buf);
         }

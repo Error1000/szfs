@@ -112,59 +112,76 @@ pub fn find_block_with_fletcher4_checksum(
 
     let partial_checksum_to_look_for = checksum[0] as ChecksumTableEntry;
 
-    let mut partial_matches: Vec<u64> = Vec::new();
     let raidz_ndevices = raidz_vdev_info.ndevices;
     let is_raidz1 = raidz_vdev_info.nparity == 1;
 
     let block_size_upper_bound =
         psize / sector_size + psize / sector_size / (raidz_ndevices - 1) + 1;
 
-    for off in (0..disk_size).step_by(1024 * 1024) {
-        // We over-read because the convolution needs more than
-        // 2048 sectors to calculate the partial checksum
-        // of the block starting at each one of the 2048 sectors
-        // this is because if the block is say 10 sectors
-        // and we want to calculate the checksum starting at sector 2047
-        // we need 9 sectors after 2047
-        // but if we read only 2048 sectors we obvs. don't have that
+    use rayon::prelude::*;
+    let partial_matches: Vec<u64> = (0..usize::try_from(disk_size).unwrap())
+        .into_par_iter()
+        .step_by(1024 * 1024)
+        .fold(
+            || (File::open("checksum-map.bin").unwrap(), Vec::new()),
+            |(mut checksum_map_file, mut partial_matches), off| {
+                let off = off as u64;
+                // We over-read because the convolution needs more than
+                // 2048 sectors to calculate the partial checksum
+                // of the block starting at each one of the 2048 sectors
+                // this is because if the block is say 10 sectors
+                // and we want to calculate the checksum starting at sector 2047
+                // we need 9 sectors after 2047
+                // but if we read only 2048 sectors we obvs. don't have that
 
-        let mut hunk =
-            vec![0u8; (2048 + block_size_upper_bound) * core::mem::size_of::<ChecksumTableEntry>()];
+                let mut hunk = vec![
+                    0u8;
+                    (2048 + block_size_upper_bound)
+                        * core::mem::size_of::<ChecksumTableEntry>()
+                ];
 
-        let checksum_file_offset =
-            (off / sector_size as u64) * core::mem::size_of::<ChecksumTableEntry>() as u64;
-        checksum_map_file
-            .seek(SeekFrom::Start(checksum_file_offset))
-            .unwrap();
-        let _ = checksum_map_file.read(&mut hunk).unwrap();
-        let mut checksums = Vec::<ChecksumTableEntry>::new();
-        for index in (0..hunk.len()).step_by(core::mem::size_of::<ChecksumTableEntry>()) {
-            checksums.push(ChecksumTableEntry::from_le_bytes(
-                hunk[index..index + core::mem::size_of::<ChecksumTableEntry>()]
-                    .try_into()
-                    .unwrap(),
-            ));
-        }
+                let checksum_file_offset =
+                    (off / sector_size as u64) * core::mem::size_of::<ChecksumTableEntry>() as u64;
+                checksum_map_file
+                    .seek(SeekFrom::Start(checksum_file_offset))
+                    .unwrap();
+                let _ = checksum_map_file.read(&mut hunk).unwrap();
+                let mut checksums = Vec::<ChecksumTableEntry>::new();
+                for index in (0..hunk.len()).step_by(core::mem::size_of::<ChecksumTableEntry>()) {
+                    checksums.push(ChecksumTableEntry::from_le_bytes(
+                        hunk[index..index + core::mem::size_of::<ChecksumTableEntry>()]
+                            .try_into()
+                            .unwrap(),
+                    ));
+                }
 
-        let res = calculate_fletcher4_partial_block_checksums(
-            off,
-            psize,
-            is_raidz1,
-            sector_size,
-            raidz_ndevices,
-            &checksums,
-        );
-
-        for ind in 0..res.len() {
-            if res[ind] as u32 == partial_checksum_to_look_for {
-                println!(
-                    "{CYAN}Info{WHITE}: Found partial match at {}!",
-                    off + (ind * sector_size) as u64
+                let res = calculate_fletcher4_partial_block_checksums(
+                    off,
+                    psize,
+                    is_raidz1,
+                    sector_size,
+                    raidz_ndevices,
+                    &checksums,
                 );
-                partial_matches.push(off + (ind * sector_size) as u64);
-            }
-        }
-    }
+
+                for ind in 0..res.len() {
+                    if res[ind] as u32 == partial_checksum_to_look_for {
+                        println!(
+                            "{CYAN}Info{WHITE}: Found partial match at {}!",
+                            off + (ind * sector_size) as u64
+                        );
+                        partial_matches.push(off + (ind * sector_size) as u64);
+                    }
+                }
+
+                (checksum_map_file, partial_matches)
+            },
+        )
+        .map(|(_, r)| r)
+        .reduce(Vec::new, |mut fold_res, thread_res| {
+            fold_res.extend(thread_res);
+            fold_res
+        });
 
     for partial_match_off in partial_matches {
         // Check to see if the match is correct

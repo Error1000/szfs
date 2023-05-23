@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 debug = []
+yolo = []
 
 [[bin]]
 name = "fs-walker"
@@ -20,6 +21,9 @@ name = "find-block-with-checksum"
 
 [[bin]]
 name = "read-dva"
+
+[[bin]]
+name = "recover"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

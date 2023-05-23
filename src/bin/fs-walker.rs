@@ -195,6 +195,11 @@ fn main() {
         .write(true)
         .open("file.bin")
         .unwrap()
-        .write_all(&file_node.0.read(0, file_len as usize, &mut vdevs).unwrap())
+        .write_all(
+            &file_node
+                .0
+                .read(0, usize::try_from(file_len).unwrap(), &mut vdevs)
+                .unwrap(),
+        )
         .unwrap();
 }
