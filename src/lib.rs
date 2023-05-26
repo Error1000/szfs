@@ -42,14 +42,13 @@ pub mod ansi_color {
 // TODO:
 // 1. Implement spill blocks
 // 2. Implement non-embedded fat zap tables
-// 3. Implement gang blocks
-// 4. Implement all nvlist values
-// 5. Implement all fat zap values
-// 6. Implement all system attributes
-// 7. Don't just skip the parity sectors in RAIDZ
-// 8. Test RAIDZ writing, and in general implement writing
-// 9. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
-// 10. Make sure usage of "as" is correct ( probably should use .try_into()? or something similar in some places )
+// 3. Implement all nvlist values
+// 4. Implement all fat zap values
+// 5. Implement all system attributes
+// 6. Don't just skip the parity sectors in RAIDZ
+// 7. Test RAIDZ writing, and in general implement writing
+// 8. Figure out why dvas at the end of a plain file contents indirect block tree have vdev id 1
+// 9. Make sure usage of "as" is correct ( probably should use .try_into()? or something similar in some places )
 
 pub struct RaidzInfo {
     ndevices: usize,
@@ -492,6 +491,7 @@ pub struct Uberblock {
 }
 
 const UBERBLOCK_MAGIC: u64 = 0x00bab10c;
+
 impl Uberblock {
     pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<Uberblock>
     where

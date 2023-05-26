@@ -149,8 +149,6 @@ fn main() {
 
     let mut recovered_fragments: Vec<([u64; 4], Fragment)> =
         serde_json::from_reader(File::open("undelete-filtered-checkpoint.json").unwrap()).unwrap();
-    recovered_fragments.retain(|(_, f)| matches!(f.data, FragmentData::FileDNode(_)));
-    // write!(OpenOptions::new().create(true).truncate(true).write(true).open(format!("undelete-filtered-checkpoint.json")).unwrap(), "{}", &serde_json::to_string(&recovered_fragments.iter().collect::<Vec<(_, _)>>()).unwrap()).unwrap();
 
     recovered_fragments.retain(|frag| {
         if let FragmentData::FileDNode(file) = &frag.1.data {

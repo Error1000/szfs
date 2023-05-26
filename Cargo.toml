@@ -11,6 +11,9 @@ yolo = []
 name = "fs-walker"
 
 [[bin]]
+name = "filter-checkpoint"
+
+[[bin]]
 name = "undelete"
 
 [[bin]]

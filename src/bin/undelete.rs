@@ -588,7 +588,7 @@ fn main() {
     println!("Step 1. Gathering basic fragments");
 
     let mut checkpoint_number = 0;
-    for off in ((disk_size as f64 * 0.5) as u64 / 512 * 512..disk_size).step_by(512) {
+    for off in ((disk_size as f64) as u64 / 512 * 512..disk_size).step_by(512) {
         if off % (128 * 1024 * 1024) == 0 && off != 0 {
             println!(
                 "{}% done gathering basic fragments ...",

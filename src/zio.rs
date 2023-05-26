@@ -2,6 +2,51 @@ use crate::{byte_iter::ByteIter, dmu, fletcher, lz4, lzjb, yolo_block_recovery, 
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Debug};
 
+const GANGBLOCK_MAGIC: u64 = 0x210da7ab10c7a11;
+
+pub struct GangBlock {
+    bps: [Option<BlockPointer>; 3],
+    magic: u64,
+    checksum: [u64; 4],
+}
+
+impl GangBlock {
+    pub fn get_ondisk_size() -> usize {
+        // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L63
+        // And: https://github.com/openzfs/zfs/blob/master/include/sys/fs/zfs.h#L1802
+        512
+    }
+
+    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<GangBlock>
+    where
+        Iter: Iterator<Item = u8> + Clone,
+    {
+        let bp1 = BlockPointer::from_bytes_le(&mut data.clone());
+        data.skip_n_bytes(BlockPointer::get_ondisk_size())?;
+        let bp2 = BlockPointer::from_bytes_le(&mut data.clone());
+        data.skip_n_bytes(BlockPointer::get_ondisk_size())?;
+        let bp3 = BlockPointer::from_bytes_le(&mut data.clone());
+        data.skip_n_bytes(BlockPointer::get_ondisk_size())?;
+        let padding_amount = Self::get_ondisk_size()
+            - 3 * BlockPointer::get_ondisk_size()
+            - core::mem::size_of::<u64>() * 5;
+        data.skip_n_bytes(padding_amount)?;
+        let magic = data.read_u64_le()?;
+        let checksum = [
+            data.read_u64_le()?,
+            data.read_u64_le()?,
+            data.read_u64_le()?,
+            data.read_u64_le()?,
+        ];
+
+        Some(GangBlock {
+            bps: [bp1, bp2, bp3],
+            magic,
+            checksum,
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DataVirtualAddress {
     vdev_id: u32,
@@ -66,16 +111,47 @@ impl DataVirtualAddress {
     }
 
     pub fn dereference(&self, vdevs: &mut Vdevs, size: usize) -> Result<Vec<u8>, ()> {
+        let data = self.dereference_raw(vdevs, size)?;
+
         if self.is_gang {
             use crate::ansi_color::*;
-            if cfg!(feature = "debug") {
-                println!(
-                    "{MAGENTA}TODO{WHITE}: Implement GANG blocks, currentl just retuning error!"
-                );
-            }
-            return Err(());
-        }
+            println!("{YELLOW}Warning{WHITE}: Trying to dereference GANG DVA {self:?}, this code was untested when it was written, so i don't know if it will actually work on real data!");
 
+            let computed_checksum =
+                try_checksum_block(&data, ChecksumMethod::GangHeader).ok_or(())?;
+
+            let gang_block = GangBlock::from_bytes_le(&mut data.into_iter()).ok_or(())?;
+
+            // First check the gang_block's checksum
+            if computed_checksum != gang_block.checksum {
+                return Err(());
+            }
+
+            // Now theoretically we just dereference each block pointer sequentially
+            // and concatenate the results right?
+            let mut gang_data = Vec::<u8>::new();
+            for bp in gang_block.bps {
+                if let Some(Ok(data)) = bp.map(|mut bp| bp.dereference(vdevs)) {
+                    gang_data.extend(data);
+                } else {
+                    // We break when we hit the first unparsable block pointer of the gang
+                    // In theory assuming no corruption
+                    // which should not be possible because we checked the checksum of the gang
+                    // this should only happen when we have hit the last block pointer
+                    // in the gang, so it should be ok
+                    break;
+                }
+            }
+
+            Ok(gang_data)
+        } else {
+            Ok(data)
+        }
+    }
+
+    // Dereference the actual block
+    // So if this is a gang block this will return the gang header
+    pub fn dereference_raw(&self, vdevs: &mut Vdevs, size: usize) -> Result<Vec<u8>, ()> {
         if cfg!(feature = "debug") {
             if self.vdev_id != 0 {
                 use crate::ansi_color::*;
@@ -301,6 +377,26 @@ pub fn try_decompress_block(
     Ok(data)
 }
 
+fn try_checksum_block(block_data: &[u8], checksum_method: ChecksumMethod) -> Option<[u64; 4]> {
+    Some(match checksum_method {
+        ChecksumMethod::Fletcher4 | ChecksumMethod::GangHeader | ChecksumMethod::On => {
+            fletcher::do_fletcher4(block_data)
+        }
+        ChecksumMethod::Fletcher2 => fletcher::do_fletcher2(block_data),
+        _ => {
+            use crate::ansi_color::*;
+            if cfg!(feature = "debug") {
+                println!(
+                    "{MAGENTA}TODO{WHITE}: {:?} checksum is not implemented!",
+                    checksum_method
+                )
+            }
+
+            return None;
+        }
+    })
+}
+
 // Byte order (https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L591)
 // 0 = big endian
 // 1 = little endian
@@ -435,20 +531,8 @@ impl NormalBlockPointer {
                 continue;
             };
 
-            let computed_checksum = match self.checksum_method {
-                ChecksumMethod::Fletcher4 | ChecksumMethod::On => fletcher::do_fletcher4(&data),
-                ChecksumMethod::Fletcher2 => fletcher::do_fletcher2(&data),
-                _ => {
-                    use crate::ansi_color::*;
-                    if cfg!(feature = "debug") {
-                        println!(
-                            "{MAGENTA}TODO{WHITE}: {:?} checksum is not implemented, ignoring!",
-                            self.checksum_method
-                        )
-                    }
-
-                    continue;
-                }
+            let Some(computed_checksum) = try_checksum_block(&data, self.checksum_method) else {
+                continue;
             };
 
             if computed_checksum != self.checksum {
@@ -469,7 +553,7 @@ impl NormalBlockPointer {
                     println!("{YELLOW}Warning{WHITE}: Normal block pointer doesn't point to as much data as it says it should, i refuse to return it's data!");
                 }
 
-                return Err(());
+                continue;
             }
 
             // use crate::ansi_color::*;

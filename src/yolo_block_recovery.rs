@@ -85,6 +85,9 @@ lazy_static! {
 }
 
 // Returns: Location of a block with the specifed checksum
+// NOTE: Will *not* work for finding the contents of gang blocks
+// but will work for finding the gang block itself
+
 pub fn find_block_with_fletcher4_checksum(
     vdevs: &mut Vdevs,
     checksum: &[u64; 4],
