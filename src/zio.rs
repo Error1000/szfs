@@ -131,6 +131,10 @@ impl DataVirtualAddress {
             // and concatenate the results right?
             let mut gang_data = Vec::<u8>::new();
             for bp in gang_block.bps {
+                // NOTE: On any normal gang header
+                // if the checksum passes then the following code shouldn't be a problem
+                // BUT you could craft a valid gang header with a block pointer to itself
+                // which would cause infinite recursion
                 if let Some(Ok(data)) = bp.map(|mut bp| bp.dereference(vdevs)) {
                     gang_data.extend(data);
                 } else {
@@ -143,6 +147,14 @@ impl DataVirtualAddress {
                 }
             }
 
+            if gang_data.len() > size {
+                gang_data.resize(size, 0);
+            }
+
+            if gang_data.len() != size {
+                return Err(());
+            }
+
             Ok(gang_data)
         } else {
             Ok(data)
@@ -152,7 +164,7 @@ impl DataVirtualAddress {
     // Dereference the actual block
     // So if this is a gang block this will return the gang header
     pub fn dereference_raw(&self, vdevs: &mut Vdevs, size: usize) -> Result<Vec<u8>, ()> {
-        if cfg!(feature = "debug") {
+        if cfg!(feature = "verbose_debug") {
             if self.vdev_id != 0 {
                 use crate::ansi_color::*;
                 println!(
@@ -162,6 +174,7 @@ impl DataVirtualAddress {
             }
         }
 
+        // TODO: Figure out why some DVAs don't have vdev 0 even though they should
         let Some(vdev) = vdevs.get_mut(&0) else { return Err(()); };
 
         if let Some(raidz_info) = vdev.get_raidz_info() {
@@ -170,6 +183,7 @@ impl DataVirtualAddress {
             } else {
                 (size / vdev.get_asize()) + 1
             };
+
             let number_of_stripes =
                 if number_of_data_sectors % (raidz_info.ndevices - raidz_info.nparity) == 0 {
                     number_of_data_sectors / (raidz_info.ndevices - raidz_info.nparity)
@@ -180,12 +194,6 @@ impl DataVirtualAddress {
 
             let size_with_parity =
                 (number_of_data_sectors + number_of_parity_sectors) * vdev.get_asize();
-
-            // TODO: This shouldn't need to be here once we can properly bubble up the out of bounds error from lower layers
-            // This is only here for the undelete program so that a dva interpreted from bad data won't be noisy
-            if self.parse_offset() + (size_with_parity as u64) > vdev.get_size() {
-                return Err(());
-            }
 
             let res = vdev.read(self.parse_offset(), size_with_parity)?;
 
@@ -224,12 +232,6 @@ impl DataVirtualAddress {
             assert!(res_transposed.len() == size);
             Ok(res_transposed)
         } else {
-            // TODO: This shouldn't need to be here once we can properly bubble up the out of bounds error from lower layers
-            // This is only here for the undelete program so that a dva interpreted from bad data won't be noisy
-            if self.parse_offset() + (size as u64) > vdev.get_size() {
-                return Err(());
-            }
-
             vdev.read(self.parse_offset(), size)
         }
     }
@@ -237,7 +239,7 @@ impl DataVirtualAddress {
 
 pub type Vdevs<'a> = HashMap<usize, &'a mut dyn Vdev>;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
 pub enum ChecksumMethod {
     Inherit = 0,
     On = 1, // equivalent to fletcher4 ( https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L122 )
@@ -353,6 +355,7 @@ pub fn try_decompress_block(
                 &mut block_data[4..usize::try_from(comp_size).unwrap() + 4]
                     .iter()
                     .copied(),
+                Some(output_size),
             )?
         }
 
@@ -522,6 +525,14 @@ impl NormalBlockPointer {
 
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data pointed to by the gang blocks once stitched together, and it is done before decompression
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
+        if let Some(res) = vdevs
+            .get_mut(&0)
+            .unwrap()
+            .get_from_block_cache(&(self.checksum, self.checksum_method))
+        {
+            return Ok(res.clone());
+        }
+
         for dva in self.dvas.iter().filter_map(|val| val.as_ref()) {
             let Ok(data) = dva.dereference(vdevs, usize::try_from(self.parse_physical_size()).unwrap()) else {
                 if cfg!(feature = "debug") {
@@ -556,8 +567,16 @@ impl NormalBlockPointer {
                 continue;
             }
 
-            // use crate::ansi_color::*;
-            // println!("{CYAN}Info{WHITE}: Using dva: {:?}", dva);
+            if cfg!(feature = "verbose_debug") {
+                use crate::ansi_color::*;
+                println!("{CYAN}Info{WHITE}: Using dva: {:?}", dva);
+            }
+
+            // TODO: If there are many vdevs, this will only use the first one for the cache
+            vdevs
+                .get_mut(&0)
+                .unwrap()
+                .put_in_block_cache((self.checksum, self.checksum_method), data.clone());
             return Ok(data);
         }
 
@@ -587,6 +606,10 @@ impl NormalBlockPointer {
                         return Err(());
                     }
 
+                    vdevs
+                        .get_mut(&0)
+                        .unwrap()
+                        .put_in_block_cache((self.checksum, self.checksum_method), data.clone());
                     return Ok(data);
                 };
             }

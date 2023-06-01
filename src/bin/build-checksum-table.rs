@@ -105,7 +105,6 @@ fn main() {
     let sector_size = vdev_raidz.get_asize() as u64;
 
     let mut checksum_map_file = OpenOptions::new()
-        .write(true)
         .append(true)
         .create(true)
         .open("checksum-map.bin")

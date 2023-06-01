@@ -12,6 +12,7 @@ use std::{
     fmt::Debug,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
+    time,
 };
 
 use byte_iter::ByteIter;
@@ -55,7 +56,11 @@ pub struct RaidzInfo {
     nparity: usize,
 }
 
-pub trait Vdev {
+pub trait Vdev: Send {
+    // NOTE: If a vdev type doesn't have a cache it can just return None when getting and do nothing when putting
+    fn get_from_block_cache(&mut self, key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>>;
+    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Vec<u8>);
+
     fn get_size(&self) -> u64;
     // NOTE: Read and write ignore the labels and the boot block
     // A.k.a for a normal vdev the offset is relative to the end of the boot block instead
@@ -87,6 +92,13 @@ impl From<File> for VdevFile {
 }
 
 impl VdevRaw for VdevFile {
+    // Files don't have a block cache
+    fn get_from_block_cache(&mut self, _key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>> {
+        None
+    }
+
+    fn put_in_block_cache(&mut self, _key: ([u64; 4], zio::ChecksumMethod), _value: Vec<u8>) {}
+
     fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
         let mut buf = vec![0u8; amount_in_bytes];
         self.device
@@ -144,6 +156,10 @@ impl VdevRaw for VdevFile {
 }
 
 trait VdevRaw {
+    fn get_from_block_cache(&mut self, key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>>;
+
+    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Vec<u8>);
+
     fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()>;
 
     fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()>;
@@ -154,8 +170,16 @@ trait VdevRaw {
 
 impl<T> Vdev for T
 where
-    T: VdevRaw + Debug,
+    T: VdevRaw + Debug + Send,
 {
+    fn get_from_block_cache(&mut self, key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>> {
+        VdevRaw::get_from_block_cache(self, key)
+    }
+
+    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Vec<u8>) {
+        VdevRaw::put_in_block_cache(self, key, value)
+    }
+
     fn get_raidz_info(&self) -> Option<RaidzInfo> {
         None
     }
@@ -234,9 +258,13 @@ pub struct VdevRaidz<'a> {
     asize: usize,
     // This is based on a profiler showing that we hit read_sector heavily and since disk access is slow
     // and because we tend to access the same sectors multiple times (cache hit rate is ~97% as measured in runtime) in a non-sequential order,
-    cache: LruCache<u64, Vec<u8>>,
-    cache_hits: u64,
-    cache_misses: u64,
+    sector_cache: LruCache<u64, Vec<u8>>,
+    sector_cache_hits: u64,
+    sector_cache_misses: u64,
+    block_cache: LruCache<([u64; 4], zio::ChecksumMethod), Vec<u8>>,
+    block_cache_hits: u64,
+    block_cache_misses: u64,
+    last_debug: time::SystemTime,
 }
 
 impl<'a> VdevRaidz<'a> {
@@ -254,30 +282,43 @@ impl<'a> VdevRaidz<'a> {
             ndevices,
             nparity,
             asize,
-            cache: LruCache::new(500_000.try_into().unwrap()),
-            cache_hits: 0,
-            cache_misses: 0,
+            // A sector is usually 4k or 512b, so this will take max ~2gb
+            sector_cache: lru::LruCache::new(512_000.try_into().unwrap()),
+            sector_cache_hits: 0,
+            sector_cache_misses: 0,
+            // A block is usually <128kb, so this will take max ~3gb
+            block_cache: lru::LruCache::new(24_000.try_into().unwrap()),
+            block_cache_hits: 0,
+            block_cache_misses: 0,
+            last_debug: time::SystemTime::now(),
         }
     }
 
     pub fn read_sector(&mut self, sector_index: u64) -> Result<Vec<u8>, ()> {
-        if let Some(res) = self.cache.get_mut(&sector_index).cloned() {
+        if let Some(res) = self.sector_cache.get_mut(&sector_index).cloned() {
             if cfg!(feature = "debug") {
-                self.cache_hits += 1;
-                if self.cache_hits % 100_000_000 == 0 {
+                self.sector_cache_hits += 1;
+                if time::SystemTime::now()
+                    .duration_since(self.last_debug)
+                    .unwrap()
+                    .as_secs_f32()
+                    > 10.0
+                {
                     println!(
                         "Info: Raidz sector cache hit rate is {}%!",
-                        ((self.cache_hits as f64)
-                            / (self.cache_hits as f64 + self.cache_misses as f64))
+                        ((self.sector_cache_hits as f64)
+                            / (self.sector_cache_hits as f64 + self.sector_cache_misses as f64))
                             * 100.0
                     );
+
+                    self.last_debug = time::SystemTime::now();
                 }
             }
             return Ok(res);
         }
 
         if cfg!(feature = "debug") {
-            self.cache_misses += 1;
+            self.sector_cache_misses += 1;
         }
 
         let device_sector_index = sector_index / (self.ndevices as u64);
@@ -288,7 +329,7 @@ impl<'a> VdevRaidz<'a> {
             .get_mut(&device_number)
             .ok_or(())?
             .read(device_sector_index * (asize as u64), asize)?;
-        self.cache.push(sector_index, res.clone());
+        self.sector_cache.put(sector_index, res.clone());
         Ok(res)
     }
 
@@ -302,12 +343,45 @@ impl<'a> VdevRaidz<'a> {
             .get_mut(&device_number)
             .ok_or(())?
             .write(device_sector_index * (asize as u64), data)?;
-        self.cache.push(sector_index, Vec::from(data));
+        self.sector_cache.put(sector_index, Vec::from(data));
         Ok(())
     }
 }
 
 impl Vdev for VdevRaidz<'_> {
+    fn get_from_block_cache(&mut self, key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>> {
+        let res = self.block_cache.get(key);
+        if cfg!(feature = "debug") {
+            if res.is_some() {
+                self.block_cache_hits += 1;
+            } else {
+                self.block_cache_misses += 1;
+            }
+
+            if time::SystemTime::now()
+                .duration_since(self.last_debug)
+                .unwrap()
+                .as_secs_f32()
+                > 10.0
+            {
+                println!(
+                    "Info: Raidz block cache hit rate is {}%!",
+                    ((self.block_cache_hits as f64)
+                        / (self.block_cache_hits as f64 + self.block_cache_misses as f64))
+                        * 100.0
+                );
+
+                self.last_debug = time::SystemTime::now();
+            }
+        }
+
+        res
+    }
+
+    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Vec<u8>) {
+        self.block_cache.put(key, value);
+    }
+
     fn get_raidz_info(&self) -> Option<RaidzInfo> {
         Some(RaidzInfo {
             ndevices: self.ndevices,

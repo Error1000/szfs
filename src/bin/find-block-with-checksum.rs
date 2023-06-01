@@ -5,7 +5,6 @@ use std::{
     sync::atomic::AtomicU64,
 };
 
-use rayon::prelude::IntoParallelIterator;
 use szfs::yolo_block_recovery;
 
 type ChecksumTableEntry = u32;
@@ -46,7 +45,7 @@ fn main() {
 
     let sync_off = AtomicU64::from(0);
     use rayon::prelude::*;
-    let potential_matches = (0..usize::try_from(disk_size).unwrap())
+    let potential_matches: Vec<u64> = (0..usize::try_from(disk_size).unwrap())
         .into_par_iter()
         .step_by(1024 * 1024)
         .fold(
@@ -112,15 +111,14 @@ fn main() {
             },
         )
         .map(|(_, thread_potential_matches)| thread_potential_matches)
-        .reduce(Vec::new, |mut total_res, thread_res| {
-            total_res.extend(thread_res);
-            total_res
-        });
+        .flatten()
+        .collect();
 
     println!(
         "Found {} potential matches in total!",
         potential_matches.len()
     );
+
     for pmatch in potential_matches {
         println!("- {}", pmatch);
     }

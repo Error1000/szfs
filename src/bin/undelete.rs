@@ -253,9 +253,9 @@ impl From<FragmentData> for Fragment {
 fn search_le_bytes_for_dnodes(data: &[u8], vdevs: &mut Vdevs) -> HashMap<[u64; 4], Fragment> {
     let mut res = HashMap::<[u64; 4], Fragment>::new();
     if data.len() % 512 != 0 {
-        if cfg!(feature = "debug") {
+        if cfg!(feature = "verbose_debug") {
             use crate::ansi_color::*;
-            println!("{YELLOW}Warning{WHITE}: Can't search data that is not a multiple of 512 bytes in size, ignoring extra bytes!");
+            println!("{YELLOW}Warning{WHITE}: Can't search data that is not a multiple of 512 bytes in size, ignoring {} extra bytes!", data.len()%512);
         }
     }
 
@@ -501,7 +501,7 @@ fn dump_graph_to_stdout(fragments: &mut HashMap<[u64; 4], Fragment>) {
             );
         }
 
-        if fragment.children.len() == 0 {
+        if fragment.children.is_empty() {
             println!("\"{}\"", hashes_to_info[hash]);
         }
     }
@@ -588,7 +588,7 @@ fn main() {
     println!("Step 1. Gathering basic fragments");
 
     let mut checkpoint_number = 0;
-    for off in ((disk_size as f64) as u64 / 512 * 512..disk_size).step_by(512) {
+    for off in (0..disk_size).step_by(512) {
         if off % (128 * 1024 * 1024) == 0 && off != 0 {
             println!(
                 "{}% done gathering basic fragments ...",
@@ -648,8 +648,8 @@ fn main() {
                         );
                     }
 
-                    let res = search_le_bytes_for_dnodes(&decomp_data, &mut vdevs);
-                    recovered_fragments.extend(res);
+                    recovered_fragments
+                        .extend(search_le_bytes_for_dnodes(&decomp_data, &mut vdevs));
                 }
             }
         }

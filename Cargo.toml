@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 debug = []
 yolo = []
+verbose_debug = []
 
 [[bin]]
 name = "fs-walker"

@@ -1,10 +1,12 @@
+use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::Reverse,
     collections::{HashMap, HashSet},
     env,
     fmt::Debug,
     fs::{File, OpenOptions},
-    io::Write,
+    io::{Seek, SeekFrom, Write},
 };
 use szfs::{
     dmu::{DNodeDirectoryContents, DNodePlainFileContents, ObjSet},
@@ -67,18 +69,26 @@ impl From<FragmentData> for Fragment {
 
 fn aggregated_read_block(
     block_id: usize,
-    fragments: &mut Vec<([u64; 4], Fragment)>,
+    fragments: &mut LruCache<[u64; 4], Fragment>,
     vdevs: &mut Vdevs,
-) -> Result<Vec<u8>, ()> {
-    for f in fragments {
+) -> Result<(Vec<u8>, [u64; 4]), ()> {
+    let mut res = Err(());
+    for f in fragments.iter_mut() {
         if let FragmentData::FileDNode(file) = &mut f.1.data {
-            if let Ok(res) = file.0.read_block(block_id, vdevs) {
-                return Ok(res);
+            if let Ok(res_block_data) = file.0.read_block(block_id, vdevs) {
+                res = Ok((res_block_data, *f.0));
+                // I just realized why my code is slow
+                // i forgot to break, *facepalm*
+                break;
             }
         }
     }
 
-    Err(())
+    if let Ok((_, hsh)) = res {
+        fragments.get(&hsh); // Update LRU
+    }
+
+    res
 }
 
 fn main() {
@@ -132,6 +142,10 @@ fn main() {
     println!("{CYAN}Info{WHITE}: Parsed nv_list, {name_value_pairs:?}!");
     println!("{RED}Important{WHITE}: Please make sure the disks are actually in the right order by using the nv_list, i can't actually check that in a reliable way!!!");
 
+    if cfg!(debug_assertions) {
+        println!("{RED}Important{WHITE}: This is not an optimized binary!");
+    }
+
     let mut devices = Vdevs::new();
     devices.insert(0, &mut vdev0);
     devices.insert(1, &mut vdev1);
@@ -147,31 +161,53 @@ fn main() {
     let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
     vdevs.insert(0usize, &mut vdev_raidz);
 
-    let mut recovered_fragments: Vec<([u64; 4], Fragment)> =
-        serde_json::from_reader(File::open("undelete-filtered-checkpoint.json").unwrap()).unwrap();
+    let recovered_fragments: Vec<([u64; 4], Fragment)> =
+        serde_json::from_reader(File::open("undelete-double-filtered-checkpoint.json").unwrap())
+            .unwrap();
+    /*
+        recovered_fragments.retain_mut(|frag| {
+            if let FragmentData::FileDNode(file) = &mut frag.1.data {
+                if file.0.get_data_size() > 600 * 1024 * 1024 * 1024 {
+                    true
+                } else if let Ok(first_block) = file.0.read_block(0, &mut vdevs) {
+                    first_block[40..=47] == [0x33, 0x3A, 0x09, 0x84, 0xFC, 0x00, 0x00, 0x00]
+                        && first_block[0..=3] == [b'h', b's', b'q', b's']
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        });
 
-    recovered_fragments.retain(|frag| {
-        if let FragmentData::FileDNode(file) = &frag.1.data {
-            file.0.get_data_size() > 400 * 1024 * 1024 * 1024
-        } else {
-            false
+        recovered_fragments.sort_unstable_by_key(|f| {
+            let FragmentData::FileDNode(f) = &f.1.data else {panic!("");};
+            Reverse(f.0.get_data_size())
+        });
+
+        write!(
+            OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open("undelete-double-filtered-checkpoint.json")
+                .unwrap(),
+            "{}",
+            &serde_json::to_string(&recovered_fragments).unwrap()
+        )
+        .unwrap();
+    */
+    let biggest_file_hsh = recovered_fragments[0].0;
+    let mut recovered_fragments: LruCache<[u64; 4], Fragment> = {
+        let mut res = LruCache::unbounded();
+        for e in recovered_fragments {
+            res.put(e.0, e.1);
         }
-    });
+        res
+    };
 
-    recovered_fragments.sort_by(|a, b| {
-        let size1 = match &a.1.data {
-            FragmentData::FileDNode(f) => f.0.get_data_size(),
-            _ => panic!(""),
-        };
+    recovered_fragments.get(&biggest_file_hsh);
 
-        let size2 = match &b.1.data {
-            FragmentData::FileDNode(f) => f.0.get_data_size(),
-            _ => panic!(""),
-        };
-        size2.cmp(&size1)
-    });
-
-    // Now the fragments are files, sorted by size in descending order
     for res in recovered_fragments.iter() {
         println!("{:?}", res);
     }
@@ -192,10 +228,18 @@ fn main() {
     let file_block_size: usize = 128 * 1024;
 
     let mut output_file = OpenOptions::new()
-        .write(true)
+        .append(true)
         .create(true)
         .open("recovered-file.bin")
         .unwrap();
+
+    let resuming_offset = output_file.metadata().unwrap().len();
+    output_file.seek(SeekFrom::Start(resuming_offset)).unwrap();
+
+    let resuming_block = (resuming_offset / (file_block_size as u64))
+        .try_into()
+        .unwrap();
+    println!("Resuming from block {resuming_block}!");
 
     let nblocks_in_file = file_size / file_block_size
         + if file_size % file_block_size != 0 {
@@ -204,30 +248,28 @@ fn main() {
             0
         };
 
-    let mut bad_blocks: Vec<usize> = Vec::new();
-    for block_id in 0..nblocks_in_file {
-        if block_id % 1024 == 0 {
-            // Every ~128 mb
+    let mut nbad_blocks = 0;
+
+    for block_id in resuming_block..nblocks_in_file {
+        if block_id % (4 * 1024) == 0 {
+            // Every ~512 mb
             println!(
                 "Copying data {}% done, {} bad blocks so far ...",
                 (block_id as f32 / nblocks_in_file as f32) * 100.0,
-                bad_blocks.len()
+                nbad_blocks
             );
         }
 
-        if let Ok(block_data) =
+        if let Ok((block_data, _)) =
             aggregated_read_block(block_id, &mut recovered_fragments, &mut vdevs)
         {
             output_file.write_all(&block_data).unwrap();
         } else {
-            bad_blocks.push(block_id);
+            println!("Block {block_id} is bad!");
+            nbad_blocks += 1;
+
             // Just write 0s
             output_file.write_all(&vec![0u8; file_block_size]).unwrap();
         }
-    }
-
-    println!("Bad blocks, bad blocks, whatcha gonna do, whatcha gonna do when they come for you (checksum failed): ");
-    for bad_block_id in bad_blocks {
-        println!("- {}", bad_block_id);
     }
 }

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
-    fs::File,
-    io::{Read, Seek, SeekFrom},
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
     sync::Mutex,
 };
 
@@ -81,7 +81,12 @@ pub fn calculate_fletcher4_partial_block_checksums(
 }
 
 lazy_static! {
-    static ref YOLO_CACHE: Mutex<HashMap<[u64; 4], u64>> = Mutex::new(HashMap::new());
+    static ref YOLO_CACHE: Mutex<HashMap<([u64; 4], usize), Option<u64>>> = Mutex::new(
+        serde_json::from_reader::<_, Vec<(_, _)>>(File::open("yolo-cache.json").unwrap(),)
+            .unwrap()
+            .into_iter()
+            .collect()
+    );
 }
 
 // Returns: Location of a block with the specifed checksum
@@ -93,19 +98,25 @@ pub fn find_block_with_fletcher4_checksum(
     checksum: &[u64; 4],
     psize: usize,
 ) -> Option<u64> {
-    if let Ok(Some(res_off)) = YOLO_CACHE.lock().map(|m| m.get(checksum).copied()) {
-        return Some(res_off);
+    if let Ok(Some(res_off)) = YOLO_CACHE
+        .lock()
+        .map(|m| m.get(&(*checksum, psize)).copied())
+    {
+        return res_off;
     }
-
-    use crate::ansi_color::*;
-    println!(
-        "{YELLOW}Warning{WHITE}: Doing YOLO block recovery for block with checksum: {:?}!",
-        checksum
-    );
 
     let raidz_vdev = vdevs.get_mut(&0)?;
     let raidz_vdev_info = raidz_vdev.get_raidz_info()?;
     let sector_size = raidz_vdev.get_asize();
+    let vdevs = Mutex::from(vdevs);
+
+    use crate::ansi_color::*;
+    println!(
+        "{YELLOW}Warning{WHITE}: Doing YOLO block recovery for block with checksum: {:?} of psize: {:?} using sector size: {:?}!",
+        checksum,
+        psize,
+        sector_size
+    );
 
     let mut checksum_map_file = File::open("checksum-map.bin").unwrap();
     let checksum_map_file_size = checksum_map_file.seek(SeekFrom::End(0)).unwrap();
@@ -122,24 +133,21 @@ pub fn find_block_with_fletcher4_checksum(
         psize / sector_size + psize / sector_size / (raidz_ndevices - 1) + 1;
 
     use rayon::prelude::*;
-    let partial_matches: Vec<u64> = (0..usize::try_from(disk_size).unwrap())
+    let result: Option<u64> = (0..usize::try_from(disk_size).unwrap())
         .into_par_iter()
         .step_by(1024 * 1024)
         .fold(
             || (File::open("checksum-map.bin").unwrap(), Vec::new()),
             |(mut checksum_map_file, mut partial_matches), off| {
                 let off = off as u64;
+
                 // We over-read because the convolution needs more than
-                // 2048 sectors to calculate the partial checksum
-                // of the block starting at each one of the 2048 sectors
-                // this is because if the block is say 10 sectors
-                // and we want to calculate the checksum starting at sector 2047
-                // we need 9 sectors after 2047
-                // but if we read only 2048 sectors we obvs. don't have that
+                // 1 mb of sectors to calculate the partial checksum
+                // of the block starting at each one of the sectors
 
                 let mut hunk = vec![
                     0u8;
-                    (2048 + block_size_upper_bound)
+                    (1024 * 1024 / sector_size + block_size_upper_bound)
                         * core::mem::size_of::<ChecksumTableEntry>()
                 ];
 
@@ -171,9 +179,9 @@ pub fn find_block_with_fletcher4_checksum(
                     if res[ind] as u32 == partial_checksum_to_look_for {
                         println!(
                             "{CYAN}Info{WHITE}: Found partial match at {}!",
-                            off + (ind * sector_size) as u64
+                            off + (ind as u64) * (sector_size as u64)
                         );
-                        partial_matches.push(off + (ind * sector_size) as u64);
+                        partial_matches.push(off + (ind as u64) * (sector_size as u64));
                     }
                 }
 
@@ -181,40 +189,54 @@ pub fn find_block_with_fletcher4_checksum(
             },
         )
         .map(|(_, r)| r)
-        .reduce(Vec::new, |mut fold_res, thread_res| {
-            fold_res.extend(thread_res);
-            fold_res
+        .flatten()
+        .find_any(move |&partial_match_off| {
+            // Check to see if the match is correct
+            let dva = DataVirtualAddress::from(0, partial_match_off, false);
+            let Ok(data) = dva.dereference(&mut vdevs.lock().unwrap(), psize) else { return false; };
+            let checksum_of_match = do_fletcher4(&data);
+            return checksum_of_match == *checksum;
         });
 
-    for partial_match_off in partial_matches {
-        // Check to see if the match is correct
-        let dva = DataVirtualAddress::from(0, partial_match_off, false);
-        let Ok(data) = dva.dereference(vdevs, psize) else { continue; };
-        let checksum_of_match = do_fletcher4(&data);
-        if &checksum_of_match == checksum {
-            // Yay :)
+    let save_yolo_cache = |map: &HashMap<_, _>| {
+        // Save the new cache
+        write!(
+            OpenOptions::new()
+                .truncate(true)
+                .create(true)
+                .write(true)
+                .open("yolo-cache.json")
+                .unwrap(),
+            "{}",
+            serde_json::to_string(&map.iter().collect::<Vec<(_, _)>>()).unwrap()
+        )
+        .unwrap();
+    };
 
-            if let Ok(mut lock) = YOLO_CACHE.lock() {
-                lock.insert(*checksum, partial_match_off);
-            } // Eh.. it's not that big a deal if we can't lock, we just miss some optimisations, just don't crash the app that's the main priority
+    if let Some(off) = result {
+        if let Ok(mut lock) = YOLO_CACHE.lock() {
+            lock.insert((*checksum, psize), Some(off));
+            save_yolo_cache(&*lock);
+        } // Eh.. it's not that big a deal if we can't lock, we just miss some optimisations, just don't crash the app that's the main priority
 
-            println!(
-                "{CYAN}Info{WHITE}: YOLO block recovery succeded for block with checksum: {:?}, the result was offset {:?}!",
-                checksum,
-                partial_match_off
-            );
+        println!(
+            "{CYAN}Info{WHITE}: YOLO block recovery succeded for block with checksum: {:?}, the result was offset {:?}!",
+            checksum,
+            off
+        );
 
-            return Some(partial_match_off);
-        }
+        return Some(off);
+    } else {
+        if let Ok(mut lock) = YOLO_CACHE.lock() {
+            lock.insert((*checksum, psize), None);
+            save_yolo_cache(&*lock);
+        } // Eh.. it's not that big a deal if we can't lock, we just miss some optimisations, just don't crash the app that's the main priority
+
+        println!(
+            "{YELLOW}Warning{WHITE}: YOLO block recovery failed for block with checksum: {:?}!",
+            checksum
+        );
+
+        return None;
     }
-
-    // Finally if none of the matches have a correct checksum
-    // or if there are no matches just return None
-
-    println!(
-        "{YELLOW}Warning{WHITE}: YOLO block recovery failed for block with checksum: {:?}!",
-        checksum
-    );
-
-    None
 }

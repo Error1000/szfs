@@ -2,8 +2,20 @@ use crate::byte_iter::ByteIter;
 
 // Warning: The size of input is relevant as the lz4 format may not be able to figure out when the stream ends
 // due to 00 00 00 being a valid block that means copy the last byte 4 times
-pub fn lz4_decompress_blocks(data: &mut impl Iterator<Item = u8>) -> Result<Vec<u8>, Vec<u8>> {
-    let mut output_buf = Vec::new();
+// NOTE: The hint output size is used to presize the output vector
+//       It's only a hint though, if it's wrong the vector will just
+//       grow naturally
+
+pub fn lz4_decompress_blocks(
+    data: &mut impl Iterator<Item = u8>,
+    hint_output_size: Option<usize>,
+) -> Result<Vec<u8>, Vec<u8>> {
+    let mut output_buf = if let Some(hint) = hint_output_size {
+        Vec::with_capacity(hint)
+    } else {
+        Vec::new()
+    };
+
     loop {
         let token = data.next().ok_or(output_buf.clone())?;
         let mut literal_size: usize = ((token & 0xF0) >> 4).into();
