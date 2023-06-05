@@ -7,6 +7,7 @@ use std::{
     io::Write,
 };
 use szfs::{
+    byte_iter::FromBytesLE,
     zio::{CompressionMethod, Vdevs},
     *,
 };
@@ -21,9 +22,7 @@ impl IndirectBlock {
         let mut nfound = 0;
         let data = data.chunks(zio::BlockPointer::get_ondisk_size());
         for potential_bp in data {
-            if let Some(mut bp) =
-                zio::BlockPointer::from_bytes_le(&mut potential_bp.iter().copied())
-            {
+            if let Some(bp) = zio::BlockPointer::from_bytes_le(&mut potential_bp.iter().copied()) {
                 res.push(Some(bp));
                 nfound += 1;
             } else {

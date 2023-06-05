@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 
-use crate::byte_iter::ByteIter;
+use crate::byte_iter::{ByteIter, FromBytes, FromBytesBE, FromBytesLE};
 use crate::dmu::DNodeBase;
 use crate::zio::Vdevs;
 
@@ -82,6 +82,24 @@ pub struct MicroZapEntry {
     name: Vec<u8>,
 }
 
+impl<It> FromBytesLE<It> for MicroZapEntry
+where
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes_le(data: &mut It) -> Option<MicroZapEntry> {
+        let value = u64::from_bytes_le(data)?;
+        let collision_differentiator = u32::from_bytes_le(data)?;
+        data.skip_n_bytes(core::mem::size_of::<u16>())?;
+        let name = Vec::from_iter(data.take(Self::get_name_length()));
+        assert!(name.len() == Self::get_name_length());
+        Some(MicroZapEntry {
+            value,
+            collision_differentiator,
+            name,
+        })
+    }
+}
+
 impl MicroZapEntry {
     pub const fn get_ondisk_size() -> usize {
         64
@@ -92,19 +110,6 @@ impl MicroZapEntry {
             - core::mem::size_of::<u64>()
             - core::mem::size_of::<u32>()
             - core::mem::size_of::<u16>() /* padding */
-    }
-
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<MicroZapEntry> {
-        let value = data.read_u64_le()?;
-        let collision_differentiator = data.read_u32_le()?;
-        data.skip_n_bytes(core::mem::size_of::<u16>())?;
-        let name = Vec::from_iter(data.take(Self::get_name_length()));
-        assert!(name.len() == Self::get_name_length());
-        Some(MicroZapEntry {
-            value,
-            collision_differentiator,
-            name,
-        })
     }
 
     #[must_use]
@@ -144,7 +149,7 @@ impl ZapLeaf {
         let header = ZapLeafHeader::from_bytes_le(data)?;
         let mut hash_table = vec![0u16; Self::get_hash_table_numentries(block_size)];
         for value in hash_table.iter_mut() {
-            *value = data.read_u16_le()?;
+            *value = u16::from_bytes_le(data)?;
         }
 
         // Calculate length of chunk array
@@ -199,7 +204,7 @@ impl ZapLeaf {
 
                     match int_size {
                         8 if nvalues == 1 => {
-                            let value = value_chunk.iter().copied().read_u64_be()?;
+                            let value = u64::from_bytes_be(&mut value_chunk.iter().copied())?;
                             if hashmap.insert(name.to_owned(), Value::U64(value)).is_some() {
                                 fat_zap_name_repeated()
                             }
@@ -209,7 +214,7 @@ impl ZapLeaf {
                             let mut values = Vec::<u64>::new();
                             let mut iter = value_chunk.iter().copied();
                             for _ in 0..nvalues {
-                                values.push(iter.read_u64_be()?);
+                                values.push(u64::from_bytes_be(&mut iter)?);
                             }
                             if hashmap
                                 .insert(name.to_owned(), Value::U64Array(values))
@@ -220,7 +225,7 @@ impl ZapLeaf {
                         }
 
                         1 if nvalues == 1 => {
-                            let value = value_chunk.iter().copied().read_u8()?;
+                            let value = u8::from_bytes(&mut value_chunk.iter().copied())?;
                             if hashmap
                                 .insert(name.to_owned(), Value::Byte(value))
                                 .is_some()
@@ -233,7 +238,7 @@ impl ZapLeaf {
                             let mut values = Vec::<u8>::new();
                             let mut iter = value_chunk.iter().copied();
                             for _ in 0..nvalues {
-                                values.push(iter.read_u8()?);
+                                values.push(u8::from_bytes(&mut iter)?);
                             }
                             if hashmap
                                 .insert(name.to_owned(), Value::ByteArray(values))
@@ -244,7 +249,7 @@ impl ZapLeaf {
                         }
 
                         2 if nvalues == 1 => {
-                            let value = value_chunk.iter().copied().read_u16_be()?;
+                            let value = u16::from_bytes_be(&mut value_chunk.iter().copied())?;
                             if hashmap.insert(name.to_owned(), Value::U16(value)).is_some() {
                                 fat_zap_name_repeated()
                             }
@@ -254,7 +259,7 @@ impl ZapLeaf {
                             let mut values = Vec::<u16>::new();
                             let mut iter = value_chunk.iter().copied();
                             for _ in 0..nvalues {
-                                values.push(iter.read_u16_be()?);
+                                values.push(u16::from_bytes_be(&mut iter)?);
                             }
                             if hashmap
                                 .insert(name.to_owned(), Value::U16Array(values))
@@ -329,13 +334,12 @@ pub struct ZapLeafHeader {
 
 pub const ZAP_LEAF_MAGIC: u32 = 0x2AB1EAF;
 
-impl ZapLeafHeader {
-    pub const fn get_ondisk_size() -> usize {
-        48
-    }
-
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<ZapLeafHeader> {
-        let zap_type = ZapType::from_value(data.read_u64_le()?)?;
+impl<It> FromBytesLE<It> for ZapLeafHeader
+where
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes_le(data: &mut It) -> Option<ZapLeafHeader> {
+        let zap_type = ZapType::from_value(u64::from_bytes_le(data)?)?;
         use crate::ansi_color::*;
         if zap_type != ZapType::FatZapLeaf {
             println!(
@@ -344,14 +348,14 @@ impl ZapLeafHeader {
             );
             return None;
         };
-        let next_leaf = data.read_u64_le()?;
-        let prefix = data.read_u64_le()?;
-        let magic = data.read_u32_le()?;
+        let next_leaf = u64::from_bytes_le(data)?;
+        let prefix = u64::from_bytes_le(data)?;
+        let magic = u32::from_bytes_le(data)?;
         assert!(magic == ZAP_LEAF_MAGIC);
-        let nfree = data.read_u16_le()?;
-        let nentries = data.read_u16_le()?;
-        let prefix_len = data.read_u16_le()?;
-        let freelist = data.read_u16_le()?;
+        let nfree = u16::from_bytes_le(data)?;
+        let nentries = u16::from_bytes_le(data)?;
+        let prefix_len = u16::from_bytes_le(data)?;
+        let freelist = u16::from_bytes_le(data)?;
         data.skip_n_bytes(12)?;
         Some(ZapLeafHeader {
             next_leaf,
@@ -361,6 +365,12 @@ impl ZapLeafHeader {
             prefix_len,
             freelist,
         })
+    }
+}
+
+impl ZapLeafHeader {
+    pub const fn get_ondisk_size() -> usize {
+        48
     }
 }
 
@@ -385,30 +395,23 @@ pub enum ZapLeafChunk {
     },
 }
 
-impl ZapLeafChunk {
-    pub const fn get_ondisk_size() -> usize {
-        // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L42
-        24
-    }
-
-    pub fn get_byte_array_size() -> usize {
-        // https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L62
-        Self::get_ondisk_size() - 3
-    }
-
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<ZapLeafChunk> {
-        let chunk_type = ZapLeafChunkType::from_value(data.read_u8()?)?;
+impl<It> FromBytesLE<It> for ZapLeafChunk
+where
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes_le(data: &mut It) -> Option<ZapLeafChunk> {
+        let chunk_type = ZapLeafChunkType::from_value(u8::from_bytes(data)?)?;
         match chunk_type {
             ZapLeafChunkType::Entry => {
-                let int_size = data.read_u8()?;
-                let next_chunk_id = data.read_u16_le()?;
-                let name_chunk_id = data.read_u16_le()?;
-                let name_length = data.read_u16_le()?;
-                let value_chunk_id = data.read_u16_le()?;
-                let nvalues = data.read_u16_le()?;
-                let collision_differentiator = data.read_u16_le()?;
+                let int_size = u8::from_bytes(data)?;
+                let next_chunk_id = u16::from_bytes_le(data)?;
+                let name_chunk_id = u16::from_bytes_le(data)?;
+                let name_length = u16::from_bytes_le(data)?;
+                let value_chunk_id = u16::from_bytes_le(data)?;
+                let nvalues = u16::from_bytes_le(data)?;
+                let collision_differentiator = u16::from_bytes_le(data)?;
                 data.skip_n_bytes(2)?; // padding
-                let hash = data.read_u64_le()?;
+                let hash = u64::from_bytes_le(data)?;
                 Some(ZapLeafChunk::Entry {
                     int_size,
                     next_chunk_id,
@@ -423,9 +426,9 @@ impl ZapLeafChunk {
             ZapLeafChunkType::Array => {
                 let mut array = vec![0u8; Self::get_byte_array_size()];
                 for byte in array.iter_mut() {
-                    *byte = data.read_u8()?;
+                    *byte = u8::from_bytes(data)?;
                 }
-                let next_chunk_id = data.read_u16_le()?;
+                let next_chunk_id = u16::from_bytes_le(data)?;
                 Some(ZapLeafChunk::Array {
                     array,
                     next_chunk_id,
@@ -433,10 +436,22 @@ impl ZapLeafChunk {
             }
             ZapLeafChunkType::Free => {
                 data.skip_n_bytes(Self::get_byte_array_size())?;
-                let next_chunk_id = data.read_u16_le()?;
+                let next_chunk_id = u16::from_bytes_le(data)?;
                 Some(ZapLeafChunk::Free { next_chunk_id })
             }
         }
+    }
+}
+
+impl ZapLeafChunk {
+    pub const fn get_ondisk_size() -> usize {
+        // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L42
+        24
+    }
+
+    pub fn get_byte_array_size() -> usize {
+        // https://github.com/openzfs/zfs/blob/master/include/sys/zap_leaf.h#L62
+        Self::get_ondisk_size() - 3
     }
 }
 
@@ -449,19 +464,24 @@ pub struct ZapPointerTable {
     blocks_copied: u64,
 }
 
+impl<It> FromBytesLE<It> for ZapPointerTable
+where
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes_le(data: &mut It) -> Option<ZapPointerTable> {
+        Some(ZapPointerTable {
+            block_id: u64::from_bytes_le(data)?,
+            num_blocks: u64::from_bytes_le(data)?,
+            shift: u64::from_bytes_le(data)?,
+            next_block: u64::from_bytes_le(data)?,
+            blocks_copied: u64::from_bytes_le(data)?,
+        })
+    }
+}
+
 impl ZapPointerTable {
     pub const fn get_ondisk_size() -> usize {
         core::mem::size_of::<u64>() * 5
-    }
-
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<ZapPointerTable> {
-        Some(ZapPointerTable {
-            block_id: data.read_u64_le()?,
-            num_blocks: data.read_u64_le()?,
-            shift: data.read_u64_le()?,
-            next_block: data.read_u64_le()?,
-            blocks_copied: data.read_u64_le()?,
-        })
     }
 }
 
@@ -482,23 +502,23 @@ impl FatZapHeader {
         data: &mut impl Iterator<Item = u8>,
         block_size: usize,
     ) -> Option<FatZapHeader> {
-        let zap_magic = data.read_u64_le()?;
+        let zap_magic = u64::from_bytes_le(data)?;
         if zap_magic != FAT_ZAP_MAGIC {
             return None;
         }
 
         let table = ZapPointerTable::from_bytes_le(data)?;
-        let free_blocks = data.read_u64_le()?;
-        let num_leafs = data.read_u64_le()?;
-        let num_entries = data.read_u64_le()?;
-        let _salt = data.read_u64_le()?;
+        let free_blocks = u64::from_bytes_le(data)?;
+        let num_leafs = u64::from_bytes_le(data)?;
+        let num_entries = u64::from_bytes_le(data)?;
+        let _salt = u64::from_bytes_le(data)?;
         data.skip_n_bytes(
             block_size / 2 - (core::mem::size_of::<u64>() * 6 + ZapPointerTable::get_ondisk_size()),
         )?;
         let mut embbeded_leafs_pointer_table =
             vec![0u64; block_size / 2 / core::mem::size_of::<u64>()];
         for value in embbeded_leafs_pointer_table.iter_mut() {
-            *value = data.read_u64_le()?;
+            *value = u64::from_bytes_le(data)?;
         }
 
         Some(FatZapHeader {
@@ -538,7 +558,7 @@ impl ZapHeader {
         data: &mut impl Iterator<Item = u8>,
         block_size: usize,
     ) -> Option<ZapHeader> {
-        let zap_type = ZapType::from_value(data.read_u64_le()?)?;
+        let zap_type = ZapType::from_value(u64::from_bytes_le(data)?)?;
         return match zap_type {
             ZapType::FatZapHeader => {
                 FatZapHeader::from_bytes_le(data, block_size).map(ZapHeader::FatZap)

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    byte_iter::ByteIter,
+    byte_iter::{ByteIter, FromBytes, FromBytesLE},
     dsl, zap,
     zil::ZilHeader,
     zio::{self, BlockPointer, ChecksumMethod, CompressionMethod, Vdevs},
@@ -233,14 +233,14 @@ impl DNodeBase {
         let checksum_method = ChecksumMethod::from_value(data.next()?.into())?;
         let compression_method = CompressionMethod::from_value(data.next()?.into())?;
         let flags = data.next()?; // Ignore 1 padding byte ( dn_flags in newer versions )
-        let data_blocksize_in_512b_sectors = data.read_u16_le()?;
-        let bonus_data_len = data.read_u16_le()?;
-        let extra_slots = data.next()?;
+        let data_blocksize_in_512b_sectors = u16::from_bytes_le(data)?;
+        let bonus_data_len = u16::from_bytes_le(data)?;
+        let extra_slots = u8::from_bytes(data)?;
         data.skip_n_bytes(3)?; // Ignore 3 padding bytes
                                // We have read 16 bytes up until now
 
-        let max_indirect_block_id = data.read_u64_le()?;
-        let total_allocated = data.read_u64_le()?; /* bytes (or sectors, depending on a flag) of disk space */
+        let max_indirect_block_id = u64::from_bytes_le(data)?;
+        let total_allocated = u64::from_bytes_le(data)?; /* bytes (or sectors, depending on a flag) of disk space */
         data.skip_n_bytes(4 * core::mem::size_of::<u64>())?; // Ignore 4 u64 paddings
 
         if flags & dnode_flag::HAS_SPILL_BLKPTR != 0 {
@@ -418,6 +418,7 @@ impl DNodeBase {
         if size == 0 {
             return Ok(Vec::new());
         }
+
         let mut result: Vec<u8> = Vec::new();
         let first_data_block_index = offset / (self.parse_data_block_size() as u64);
         let first_data_block_offset = offset % (self.parse_data_block_size() as u64);
@@ -552,15 +553,11 @@ pub enum DNode {
     SystemAttributesRegistrations(ZapDNode),
 }
 
-impl DNode {
-    pub fn get_n_slots_from_bytes_le(data: impl Iterator<Item = u8>) -> Option<usize> {
-        DNodeBase::get_n_slots_from_bytes_le(data)
-    }
-
-    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<DNode>
-    where
-        Iter: Iterator<Item = u8> + Clone,
-    {
+impl<It> FromBytesLE<It> for DNode
+where
+    It: Iterator<Item = u8> + Clone,
+{
+    fn from_bytes_le(data: &mut It) -> Option<DNode> {
         let (dnode_base, dnode_type, bonus_data_type) = DNodeBase::from_bytes_le(data)?;
         Some(match (dnode_type, bonus_data_type) {
             (ObjType::ObjectDirectory, BonusType::None) => {
@@ -596,6 +593,12 @@ impl DNode {
                 return None;
             }
         })
+    }
+}
+
+impl DNode {
+    pub fn get_n_slots_from_bytes_le(data: impl Iterator<Item = u8>) -> Option<usize> {
+        DNodeBase::get_n_slots_from_bytes_le(data)
     }
 
     pub fn get_inner(&mut self) -> &mut DNodeBase {
@@ -640,15 +643,11 @@ pub struct ObjSet {
     pub typ: ObjSetType,
 }
 
-impl ObjSet {
-    pub const fn get_ondisk_size() -> usize {
-        1024
-    }
-
-    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<ObjSet>
-    where
-        Iter: Iterator<Item = u8> + Clone,
-    {
+impl<It> FromBytesLE<It> for ObjSet
+where
+    It: Iterator<Item = u8> + Clone,
+{
+    fn from_bytes_le(data: &mut It) -> Option<ObjSet> {
         let (metadnode, metadnode_type, _) = DNodeBase::from_bytes_le(data)?;
         if metadnode_type != ObjType::DNode {
             use crate::ansi_color::*;
@@ -661,7 +660,7 @@ impl ObjSet {
         let zil = ZilHeader::from_bytes_le(&mut data.clone());
         data.skip_n_bytes(ZilHeader::get_ondisk_size())?;
 
-        let typ = ObjSetType::from_value(data.read_u64_le()?.try_into().ok()?)?;
+        let typ = ObjSetType::from_value(u64::from_bytes_le(data)?.try_into().ok()?)?;
         // Consume padding
         let size_read = metadnode.get_ondisk_size()
             + ZilHeader::get_ondisk_size()
@@ -679,6 +678,12 @@ impl ObjSet {
             zil,
             typ,
         })
+    }
+}
+
+impl ObjSet {
+    pub const fn get_ondisk_size() -> usize {
+        1024
     }
 
     pub fn get_dnode_at(&mut self, index: usize, vdevs: &mut Vdevs) -> Option<DNode> {

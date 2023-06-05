@@ -9,6 +9,7 @@ use std::{
     io::Write,
 };
 use szfs::{
+    byte_iter::FromBytesLE,
     dmu::{DNode, DNodeDirectoryContents, DNodePlainFileContents, ObjSet},
     zio::{CompressionMethod, Vdevs},
     *,

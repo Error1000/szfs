@@ -206,7 +206,7 @@ fn main() {
         res
     };
 
-    recovered_fragments.get(&biggest_file_hsh);
+    recovered_fragments.get(&biggest_file_hsh); // Update LRU
 
     for res in recovered_fragments.iter() {
         println!("{:?}", res);
@@ -233,12 +233,15 @@ fn main() {
         .open("recovered-file.bin")
         .unwrap();
 
-    let resuming_offset = output_file.metadata().unwrap().len();
-    output_file.seek(SeekFrom::Start(resuming_offset)).unwrap();
-
-    let resuming_block = (resuming_offset / (file_block_size as u64))
-        .try_into()
-        .unwrap();
+    let mut resuming_block = 0;
+    // NOTE: A file where offset 0 is the last offset is of size 1
+    if output_file.metadata().unwrap().len() > 0 {
+        let resuming_offset = output_file.metadata().unwrap().len() - 1;
+        output_file.seek(SeekFrom::Start(resuming_offset)).unwrap();
+        resuming_block = (resuming_offset / (file_block_size as u64))
+            .try_into()
+            .unwrap();
+    }
     println!("Resuming from block {resuming_block}!");
 
     let nblocks_in_file = file_size / file_block_size

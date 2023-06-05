@@ -15,7 +15,7 @@ use std::{
     time,
 };
 
-use byte_iter::ByteIter;
+use byte_iter::{FromBytes, FromBytesLE};
 use lru::LruCache;
 use zio::Vdevs;
 
@@ -282,11 +282,11 @@ impl<'a> VdevRaidz<'a> {
             ndevices,
             nparity,
             asize,
-            // A sector is usually 4k or 512b, so this will take max ~2gb
-            sector_cache: lru::LruCache::new(512_000.try_into().unwrap()),
+            // A sector is usually 4k or 512b, so this will take max ~128mb
+            sector_cache: lru::LruCache::new(48_000.try_into().unwrap()),
             sector_cache_hits: 0,
             sector_cache_misses: 0,
-            // A block is usually <128kb, so this will take max ~3gb
+            // A block is usually <128kb, so this will take max ~4gb
             block_cache: lru::LruCache::new(24_000.try_into().unwrap()),
             block_cache_hits: 0,
             block_cache_misses: 0,
@@ -566,12 +566,12 @@ pub struct Uberblock {
 
 const UBERBLOCK_MAGIC: u64 = 0x00bab10c;
 
-impl Uberblock {
-    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<Uberblock>
-    where
-        Iter: Iterator<Item = u8> + Clone,
-    {
-        let magic = data.read_u64_le()?;
+impl<It> FromBytesLE<It> for Uberblock
+where
+    It: Iterator<Item = u8> + Clone,
+{
+    fn from_bytes_le(data: &mut It) -> Option<Uberblock> {
+        let magic = u64::from_bytes_le(data)?;
 
         // Verify magic, to make sure we are using the correct endianness
         if magic != UBERBLOCK_MAGIC {
@@ -581,18 +581,22 @@ impl Uberblock {
         }
 
         Some(Uberblock {
-            version: data.read_u64_le()?,
-            txg: data.read_u64_le()?,
-            guid_sum: data.read_u64_le()?,
-            timestamp: data.read_u64_le()?,
+            version: u64::from_bytes_le(data)?,
+            txg: u64::from_bytes_le(data)?,
+            guid_sum: u64::from_bytes_le(data)?,
+            timestamp: u64::from_bytes_le(data)?,
             rootbp: zio::BlockPointer::from_bytes_le(data)?,
         })
     }
+}
 
-    // Endianness invariant uberblock loading
-    pub fn from_bytes(data: &mut (impl Iterator<Item = u8> + Clone)) -> Option<Uberblock> {
-        let ub_magic_le = data.clone().read_u64_le()?;
-        let ub_magic_be = data.clone().read_u64_be()?;
+impl<It> FromBytes<It> for Uberblock
+where
+    It: Iterator<Item = u8> + Clone,
+{
+    fn from_bytes(data: &mut It) -> Option<Uberblock> {
+        let ub_magic_le = u64::from_bytes_le(&mut data.clone())?;
+        let ub_magic_be = u64::from_bytes_le(&mut data.clone())?;
 
         if ub_magic_le == UBERBLOCK_MAGIC {
             // Little-endian

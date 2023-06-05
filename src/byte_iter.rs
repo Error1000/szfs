@@ -1,19 +1,86 @@
+pub trait FromBytesLE<It>
+where
+    Self: Sized,
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes_le(it: &mut It) -> Option<Self>;
+}
+
+pub trait FromBytesBE<It>
+where
+    Self: Sized,
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes_be(it: &mut It) -> Option<Self>;
+}
+
+pub trait FromBytes<It>
+where
+    Self: Sized,
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes(it: &mut It) -> Option<Self>;
+}
+
+impl<It> FromBytes<It> for u8
+where
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes(it: &mut It) -> Option<Self> {
+        let mut it = it.into_iter();
+        it.next()
+    }
+}
+
+macro_rules! impl_from_bytes_be_for {
+    ($name: ident) => {
+        impl<It> FromBytesBE<It> for $name
+        where
+            It: Iterator<Item = u8>,
+        {
+            fn from_bytes_be(it: &mut It) -> Option<Self> {
+                let mut buf = [0u8; core::mem::size_of::<Self>()];
+                for byte in buf.iter_mut() {
+                    *byte = it.next()?;
+                }
+                Some(Self::from_be_bytes(buf))
+            }
+        }
+    };
+}
+
+macro_rules! impl_from_bytes_le_for {
+    ($name: ident) => {
+        impl<It> FromBytesLE<It> for $name
+        where
+            It: Iterator<Item = u8>,
+        {
+            fn from_bytes_le(it: &mut It) -> Option<Self> {
+                let mut buf = [0u8; core::mem::size_of::<Self>()];
+                for b in buf.iter_mut() {
+                    *b = it.next()?;
+                }
+                Some(Self::from_le_bytes(buf))
+            }
+        }
+    };
+}
+
+impl_from_bytes_be_for!(i16);
+impl_from_bytes_be_for!(u16);
+impl_from_bytes_be_for!(i32);
+impl_from_bytes_be_for!(u32);
+impl_from_bytes_be_for!(i64);
+impl_from_bytes_be_for!(u64);
+
+impl_from_bytes_le_for!(i16);
+impl_from_bytes_le_for!(u16);
+impl_from_bytes_le_for!(i32);
+impl_from_bytes_le_for!(u32);
+impl_from_bytes_le_for!(i64);
+impl_from_bytes_le_for!(u64);
+
 pub trait ByteIter {
-    fn read_u8(&mut self) -> Option<u8>;
-    fn read_i16_be(&mut self) -> Option<i16>;
-    fn read_i16_le(&mut self) -> Option<i16>;
-    fn read_i32_be(&mut self) -> Option<i32>;
-    fn read_i32_le(&mut self) -> Option<i32>;
-    fn read_i64_be(&mut self) -> Option<i64>;
-    fn read_i64_le(&mut self) -> Option<i64>;
-
-    fn read_u16_be(&mut self) -> Option<u16>;
-    fn read_u16_le(&mut self) -> Option<u16>;
-    fn read_u32_be(&mut self) -> Option<u32>;
-    fn read_u32_le(&mut self) -> Option<u32>;
-    fn read_u64_be(&mut self) -> Option<u64>;
-    fn read_u64_le(&mut self) -> Option<u64>;
-
     #[must_use]
     fn skip_n_bytes(&mut self, n_bytes: usize) -> Option<()>;
 }
@@ -26,114 +93,7 @@ where
         if n_bytes > 0 {
             self.nth(n_bytes - 1)?;
         }
+
         Some(())
-    }
-
-    fn read_u8(&mut self) -> Option<u8> {
-        self.next()
-    }
-
-    fn read_i16_be(&mut self) -> Option<i16> {
-        Some(i16::from_be_bytes([self.next()?, self.next()?]))
-    }
-
-    fn read_u16_be(&mut self) -> Option<u16> {
-        Some(u16::from_be_bytes([self.next()?, self.next()?]))
-    }
-
-    fn read_i32_be(&mut self) -> Option<i32> {
-        Some(i32::from_be_bytes([
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-        ]))
-    }
-
-    fn read_u32_be(&mut self) -> Option<u32> {
-        Some(u32::from_be_bytes([
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-        ]))
-    }
-
-    fn read_i64_be(&mut self) -> Option<i64> {
-        Some(i64::from_be_bytes([
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-        ]))
-    }
-
-    fn read_u64_be(&mut self) -> Option<u64> {
-        Some(u64::from_be_bytes([
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-        ]))
-    }
-
-    fn read_i16_le(&mut self) -> Option<i16> {
-        Some(i16::from_le_bytes([self.next()?, self.next()?]))
-    }
-
-    fn read_u16_le(&mut self) -> Option<u16> {
-        Some(u16::from_le_bytes([self.next()?, self.next()?]))
-    }
-
-    fn read_i32_le(&mut self) -> Option<i32> {
-        Some(i32::from_le_bytes([
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-        ]))
-    }
-
-    fn read_u32_le(&mut self) -> Option<u32> {
-        Some(u32::from_le_bytes([
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-        ]))
-    }
-
-    fn read_i64_le(&mut self) -> Option<i64> {
-        Some(i64::from_le_bytes([
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-        ]))
-    }
-
-    fn read_u64_le(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes([
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-            self.next()?,
-        ]))
     }
 }

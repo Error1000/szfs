@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    byte_iter::ByteIter,
+    byte_iter::{ByteIter, FromBytes, FromBytesLE},
     dmu::{DNode, ObjSet},
     zap,
     zio::Vdevs,
@@ -36,22 +36,19 @@ pub struct SystemAttributesHeader {
 
 pub const SYSTEM_ATTRIBUTES_MAGIC: u32 = 0x2F505A;
 
-impl SystemAttributesHeader {
-    pub fn get_ondisk_size(&self) -> usize {
-        core::mem::size_of::<u32>()
-            + core::mem::size_of::<u16>()
-            + self.lengths.len() * core::mem::size_of::<u16>()
-    }
-
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<SystemAttributesHeader> {
-        let magic = data.read_u32_le()?;
+impl<It> FromBytesLE<It> for SystemAttributesHeader
+where
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes_le(data: &mut It) -> Option<SystemAttributesHeader> {
+        let magic = u32::from_bytes_le(data)?;
         if magic != SYSTEM_ATTRIBUTES_MAGIC {
             use crate::ansi_color::*;
             println!("{YELLOW}Warning{WHITE}: Tried to parse a system attributes header with invalid magic!");
             return None;
         }
 
-        let layout_info = data.read_u16_le()?;
+        let layout_info = u16::from_bytes_le(data)?;
         let mut header_size = (layout_info >> 10) & 0b1111_11;
         header_size *= 8;
 
@@ -67,9 +64,17 @@ impl SystemAttributesHeader {
         nlengths /= core::mem::size_of::<u16>();
         let mut lengths = Vec::new();
         for _ in 0..nlengths {
-            lengths.push(data.read_u16_le()?);
+            lengths.push(u16::from_bytes_le(data)?);
         }
         Some(SystemAttributesHeader { layout_id, lengths })
+    }
+}
+
+impl SystemAttributesHeader {
+    pub fn get_ondisk_size(&self) -> usize {
+        core::mem::size_of::<u32>()
+            + core::mem::size_of::<u16>()
+            + self.lengths.len() * core::mem::size_of::<u16>()
     }
 }
 
@@ -220,12 +225,12 @@ impl SystemAttributes {
 
                     let nvalues = attribute_info.len / 8;
                     if nvalues == 1 {
-                        let attribute_value = data.read_u64_le()?;
+                        let attribute_value = u64::from_bytes_le(data)?;
                         attributes.insert(attribute_info.name.clone(), Value::U64(attribute_value));
                     } else {
                         let mut attribute_values = Vec::<u64>::new();
                         for _ in 0..nvalues {
-                            attribute_values.push(data.read_u64_le()?);
+                            attribute_values.push(u64::from_bytes_le(data)?);
                         }
                         attributes.insert(
                             attribute_info.name.clone(),

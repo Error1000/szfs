@@ -5,7 +5,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{Seek, SeekFrom, Write},
 };
-use szfs::{zio::Vdevs, *};
+use szfs::{byte_iter::FromBytesLE, zio::Vdevs, *};
 #[derive(Debug, Serialize, Deserialize)]
 struct IndirectBlock {
     pub bps: Vec<Option<zio::BlockPointer>>,

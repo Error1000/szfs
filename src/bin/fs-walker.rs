@@ -1,5 +1,9 @@
 use std::{collections::HashMap, fs::OpenOptions, io::Write};
-use szfs::{zio::Vdevs, *};
+use szfs::{
+    byte_iter::{FromBytes, FromBytesLE},
+    zio::Vdevs,
+    *,
+};
 
 fn main() {
     use szfs::ansi_color::*;

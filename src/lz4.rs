@@ -1,4 +1,4 @@
-use crate::byte_iter::ByteIter;
+use crate::byte_iter::FromBytesLE;
 
 // Warning: The size of input is relevant as the lz4 format may not be able to figure out when the stream ends
 // due to 00 00 00 being a valid block that means copy the last byte 4 times
@@ -36,7 +36,7 @@ pub fn lz4_decompress_blocks(
             output_buf.push(data.next().ok_or(output_buf.clone())?);
         }
 
-        let Some(lookback) = data.read_u16_le() else {
+        let Some(lookback) = u16::from_bytes_le(data) else {
             if lookback_size == 0 {
                 // Reached end of all lz4 blocks
                 // This is not an error

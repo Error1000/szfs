@@ -1,4 +1,7 @@
-use crate::{byte_iter::ByteIter, dmu, fletcher, lz4, lzjb, yolo_block_recovery, Vdev};
+use crate::{
+    byte_iter::{ByteIter, FromBytes, FromBytesLE},
+    dmu, fletcher, lz4, lzjb, yolo_block_recovery, Vdev,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Debug};
 
@@ -10,17 +13,11 @@ pub struct GangBlock {
     checksum: [u64; 4],
 }
 
-impl GangBlock {
-    pub fn get_ondisk_size() -> usize {
-        // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L63
-        // And: https://github.com/openzfs/zfs/blob/master/include/sys/fs/zfs.h#L1802
-        512
-    }
-
-    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<GangBlock>
-    where
-        Iter: Iterator<Item = u8> + Clone,
-    {
+impl<It> FromBytesLE<It> for GangBlock
+where
+    It: Iterator<Item = u8> + Clone,
+{
+    fn from_bytes_le(data: &mut It) -> Option<Self> {
         let bp1 = BlockPointer::from_bytes_le(&mut data.clone());
         data.skip_n_bytes(BlockPointer::get_ondisk_size())?;
         let bp2 = BlockPointer::from_bytes_le(&mut data.clone());
@@ -31,12 +28,12 @@ impl GangBlock {
             - 3 * BlockPointer::get_ondisk_size()
             - core::mem::size_of::<u64>() * 5;
         data.skip_n_bytes(padding_amount)?;
-        let magic = data.read_u64_le()?;
+        let magic = u64::from_bytes_le(data)?;
         let checksum = [
-            data.read_u64_le()?,
-            data.read_u64_le()?,
-            data.read_u64_le()?,
-            data.read_u64_le()?,
+            u64::from_bytes_le(data)?,
+            u64::from_bytes_le(data)?,
+            u64::from_bytes_le(data)?,
+            u64::from_bytes_le(data)?,
         ];
 
         Some(GangBlock {
@@ -44,6 +41,14 @@ impl GangBlock {
             magic,
             checksum,
         })
+    }
+}
+
+impl GangBlock {
+    pub fn get_ondisk_size() -> usize {
+        // Source: https://github.com/openzfs/zfs/blob/master/include/sys/zio.h#L63
+        // And: https://github.com/openzfs/zfs/blob/master/include/sys/fs/zfs.h#L1802
+        512
     }
 }
 
@@ -68,6 +73,29 @@ impl Debug for DataVirtualAddress {
     }
 }
 
+impl<It> FromBytesLE<It> for DataVirtualAddress
+where
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes_le(data: &mut It) -> Option<Self> {
+        let vdev_id = ((u32::from_bytes_le(data)?) & 0xFF_FF_FF_00) >> 8; // ignore padding ( https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L129 )
+        let grid_and_asize = u32::from_bytes_le(data)?;
+        let offset_and_gang_bit = u64::from_bytes_le(data)?;
+
+        // A non-existent dva is marked by all zeroes
+        if vdev_id == 0 && grid_and_asize == 0 && offset_and_gang_bit == 0 {
+            return None;
+        }
+
+        Some(DataVirtualAddress {
+            vdev_id,
+            data_allocated_size_minus_one_in_512b_sectors: (grid_and_asize & 0xFF_FF_FF_00) >> 8, // ignore GRID as it is reserved
+            offset_in_512b_sectors: offset_and_gang_bit & ((1 << 63) - 1), // bit 64 is the gang bit
+            is_gang: offset_and_gang_bit & (1 << 63) != 0,
+        })
+    }
+}
+
 impl DataVirtualAddress {
     pub const fn get_ondisk_size() -> usize {
         core::mem::size_of::<u64>() * 2
@@ -80,23 +108,6 @@ impl DataVirtualAddress {
             offset_in_512b_sectors: offset_in_bytes / 512,
             is_gang,
         }
-    }
-
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<DataVirtualAddress> {
-        let vdev_id = ((data.read_u32_le()?) & 0xFF_FF_FF_00) >> 8; // ignore padding ( https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L129 )
-        let grid_and_asize = data.read_u32_le()?;
-        let offset_and_gang_bit = data.read_u64_le()?;
-
-        // A non-existent dva is marked by all zeroes
-        if vdev_id == 0 && grid_and_asize == 0 && offset_and_gang_bit == 0 {
-            return None;
-        }
-        Some(DataVirtualAddress {
-            vdev_id,
-            data_allocated_size_minus_one_in_512b_sectors: (grid_and_asize & 0xFF_FF_FF_00) >> 8, // ignore GRID as it is reserved
-            offset_in_512b_sectors: offset_and_gang_bit & ((1 << 63) - 1), // bit 64 is the gang bit
-            is_gang: offset_and_gang_bit & (1 << 63) != 0,
-        })
     }
 
     // Returns: allocated size in bytes
@@ -459,7 +470,7 @@ impl NormalBlockPointer {
         data.skip_n_bytes(DataVirtualAddress::get_ondisk_size())?;
         let dva3 = DataVirtualAddress::from_bytes_le(&mut data.clone());
         data.skip_n_bytes(DataVirtualAddress::get_ondisk_size())?;
-        let info = data.read_u64_le()?;
+        let info = u64::from_bytes_le(data)?;
 
         // Make sure we don't accidentally read an embedded block pointer
         if (info >> 39) & 1 != 0 {
@@ -486,13 +497,13 @@ impl NormalBlockPointer {
         // Skip padding
         data.skip_n_bytes(core::mem::size_of::<u64>() * 3)?;
 
-        let logical_birth_txg = data.read_u64_le()?;
-        let fill_count = data.read_u64_le()?;
+        let logical_birth_txg = u64::from_bytes_le(data)?;
+        let fill_count = u64::from_bytes_le(data)?;
         let checksum = [
-            data.read_u64_le()?,
-            data.read_u64_le()?,
-            data.read_u64_le()?,
-            data.read_u64_le()?,
+            u64::from_bytes_le(data)?,
+            u64::from_bytes_le(data)?,
+            u64::from_bytes_le(data)?,
+            u64::from_bytes_le(data)?,
         ];
 
         Some(NormalBlockPointer {
@@ -656,14 +667,17 @@ impl Debug for EmbeddedBlockPointer {
     }
 }
 
-impl EmbeddedBlockPointer {
-    pub fn from_bytes_le(data: &mut impl Iterator<Item = u8>) -> Option<EmbeddedBlockPointer> {
+impl<It> FromBytesLE<It> for EmbeddedBlockPointer
+where
+    It: Iterator<Item = u8>,
+{
+    fn from_bytes_le(data: &mut It) -> Option<EmbeddedBlockPointer> {
         let mut payload = Vec::<u8>::new();
         for _ in 0..6 * core::mem::size_of::<u64>() {
-            payload.push(data.read_u8()?);
+            payload.push(u8::from_bytes(data)?);
         }
 
-        let info = data.read_u64_le()?;
+        let info = u64::from_bytes_le(data)?;
 
         // Make sure we don't accidentally read an embedded block pointer
         if (info >> 39) & 1 != 1 {
@@ -688,13 +702,13 @@ impl EmbeddedBlockPointer {
         }
 
         for _ in 0..3 * core::mem::size_of::<u64>() {
-            payload.push(data.read_u8()?);
+            payload.push(u8::from_bytes(data)?);
         }
 
-        let logical_birth_txg = data.read_u64_le()?;
+        let logical_birth_txg = u64::from_bytes_le(data)?;
 
         for _ in 0..5 * core::mem::size_of::<u64>() {
-            payload.push(data.read_u8()?);
+            payload.push(u8::from_bytes(data)?);
         }
 
         Some(EmbeddedBlockPointer {
@@ -710,7 +724,9 @@ impl EmbeddedBlockPointer {
             logical_size_in_bytes: ((info >> 0) & 0xFF_FF_FF) as u32,
         })
     }
+}
 
+impl EmbeddedBlockPointer {
     // Source: https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L333
     // And: https://github.com/openzfs/zfs/blob/master/include/sys/bitops.h#L66
     pub fn parse_logical_size(&self) -> u64 {
@@ -753,20 +769,11 @@ pub enum BlockPointer {
     Embedded(EmbeddedBlockPointer),
 }
 
-impl BlockPointer {
-    pub const fn get_ondisk_size() -> usize {
-        128
-    }
-
-    pub fn get_info_form_bytes_le(mut data: impl Iterator<Item = u8>) -> Option<u64> {
-        data.skip_n_bytes(6 * core::mem::size_of::<u64>())?;
-        data.read_u64_le()
-    }
-
-    pub fn from_bytes_le<Iter>(data: &mut Iter) -> Option<BlockPointer>
-    where
-        Iter: Iterator<Item = u8> + Clone,
-    {
+impl<It> FromBytesLE<It> for BlockPointer
+where
+    It: Iterator<Item = u8> + Clone,
+{
+    fn from_bytes_le(data: &mut It) -> Option<BlockPointer> {
         let info = Self::get_info_form_bytes_le(data.clone())?;
         let is_embedded = ((info >> 39) & 1) != 0;
         if is_embedded {
@@ -776,6 +783,17 @@ impl BlockPointer {
         } else {
             Some(Self::Normal(NormalBlockPointer::from_bytes_le(data)?))
         }
+    }
+}
+
+impl BlockPointer {
+    pub const fn get_ondisk_size() -> usize {
+        128
+    }
+
+    pub fn get_info_form_bytes_le(mut data: impl Iterator<Item = u8>) -> Option<u64> {
+        data.skip_n_bytes(6 * core::mem::size_of::<u64>())?;
+        u64::from_bytes_le(&mut data)
     }
 
     // Returns: Logical size of the data pointed to by the block pointer, in bytes

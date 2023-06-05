@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use crate::byte_iter::ByteIter;
+use crate::byte_iter::{ByteIter, FromBytes, FromBytesBE};
 
 pub type Name = String;
 
@@ -134,7 +134,7 @@ fn read_string_raw(data: &mut impl Iterator<Item = u8>, size: usize) -> Option<S
 
 // Returns: The string and the amount of bytes read including the bytes of the size
 fn read_string_and_size(data: &mut impl Iterator<Item = u8>) -> Option<(String, usize)> {
-    let result_size = data.read_u32_be()?;
+    let result_size = u32::from_bytes_be(data)?;
     let result_size_aligned = if result_size % 4 == 0 {
         result_size
     } else {
@@ -171,13 +171,13 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
 
     let mut nv_list: NVList = NVList::new();
 
-    let _nvl_version = data.read_u32_be()?;
-    let _nvl_flag = data.read_u32_be()?;
+    let _nvl_version = u32::from_bytes_be(data)?;
+    let _nvl_flag = u32::from_bytes_be(data)?;
 
     // Parse pairs
     loop {
-        let encode_size = data.read_u32_be()?;
-        let decode_size = data.read_u32_be()?;
+        let encode_size = u32::from_bytes_be(data)?;
+        let decode_size = u32::from_bytes_be(data)?;
         if encode_size == 0 && decode_size == 0 {
             break;
         } // The nv_list has 8 bytes of zeroes at the end
@@ -185,7 +185,7 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
         // decode_size = 4(for the size of the size itself) + 4 (size of size of string) + size of string with padding + 4(size of value type) + 4(size of the number of values) + n*(size of value)
         let (name, string_bytes_read) = read_string_and_size(data)?;
 
-        let Some(value_type) = ValueType::from_value(data.read_u32_be()?) else {
+        let Some(value_type) = ValueType::from_value(u32::from_bytes_be(data)?) else {
             println!("Unknown nvlist value type with name: \"{}\", ignoring entry, which was {} bytes in size!", name, decode_size);
             let value_size = decode_size-(
                 string_bytes_read as u32
@@ -197,7 +197,7 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
             continue;
         };
 
-        let nvalues = data.read_u32_be()?;
+        let nvalues = u32::from_bytes_be(data)?;
 
         if nvalues == 0 {
             nv_list.insert(name, Value::Unknown);
@@ -210,19 +210,22 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
 
         match value_type {
             ValueType::Boolean => {
-                let value = data.read_u8()?;
+                let value = u8::from_bytes(data)?;
                 if nv_list.insert(name, Value::Boolean(value != 0)).is_some() {
                     nvpair_name_repeated()
                 }
             }
             ValueType::Byte => {
-                if nv_list.insert(name, Value::Byte(data.read_u8()?)).is_some() {
+                if nv_list
+                    .insert(name, Value::Byte(u8::from_bytes(data)?))
+                    .is_some()
+                {
                     nvpair_name_repeated()
                 }
             }
             ValueType::I16 => {
                 if nv_list
-                    .insert(name, Value::I16(data.read_i16_be()?))
+                    .insert(name, Value::I16(i16::from_bytes_be(data)?))
                     .is_some()
                 {
                     nvpair_name_repeated()
@@ -230,7 +233,7 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
             }
             ValueType::U16 => {
                 if nv_list
-                    .insert(name, Value::U16(data.read_u16_be()?))
+                    .insert(name, Value::U16(u16::from_bytes_be(data)?))
                     .is_some()
                 {
                     nvpair_name_repeated()
@@ -238,7 +241,7 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
             }
             ValueType::I32 => {
                 if nv_list
-                    .insert(name, Value::I32(data.read_i32_be()?))
+                    .insert(name, Value::I32(i32::from_bytes_be(data)?))
                     .is_some()
                 {
                     nvpair_name_repeated()
@@ -246,7 +249,7 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
             }
             ValueType::U32 => {
                 if nv_list
-                    .insert(name, Value::U32(data.read_u32_be()?))
+                    .insert(name, Value::U32(u32::from_bytes_be(data)?))
                     .is_some()
                 {
                     nvpair_name_repeated()
@@ -254,7 +257,7 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
             }
             ValueType::I64 => {
                 if nv_list
-                    .insert(name, Value::I64(data.read_i64_be()?))
+                    .insert(name, Value::I64(i64::from_bytes_be(data)?))
                     .is_some()
                 {
                     nvpair_name_repeated()
@@ -262,7 +265,7 @@ fn from_bytes(data: &mut impl Iterator<Item = u8>, recursion_depth: usize) -> Op
             }
             ValueType::U64 => {
                 if nv_list
-                    .insert(name, Value::U64(data.read_u64_be()?))
+                    .insert(name, Value::U64(u64::from_bytes_be(data)?))
                     .is_some()
                 {
                     nvpair_name_repeated()
