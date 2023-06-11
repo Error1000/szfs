@@ -1,0 +1,77 @@
+[
+    {
+        "name": "ZPL_MODE",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_SIZE",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_GEN",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_UID",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_GID",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_PARENT",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_FLAGS",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_ATIME",
+        "bswap": 0,
+        "len": 16
+    },
+    {
+        "name": "ZPL_MTIME",
+        "bswap": 0,
+        "len": 16
+    },
+    {
+        "name": "ZPL_CTIME",
+        "bswap": 0,
+        "len": 16
+    },
+    {
+        "name": "ZPL_CRTIME",
+        "bswap": 0,
+        "len": 16
+    },
+    {
+        "name": "ZPL_LINKS",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_PROJID",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_DACL_COUNT",
+        "bswap": 0,
+        "len": 8
+    },
+    {
+        "name": "ZPL_DACL_ACES",
+        "bswap": 4,
+        "len": null
+    }
+]

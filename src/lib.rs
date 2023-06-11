@@ -58,8 +58,14 @@ pub struct RaidzInfo {
 
 pub trait Vdev: Send {
     // NOTE: If a vdev type doesn't have a cache it can just return None when getting and do nothing when putting
-    fn get_from_block_cache(&mut self, key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>>;
-    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Vec<u8>);
+    // Return type is Option<Option> so we can cache a block that is unreadable
+    // So there are 3 possible return values None - means not in cache, Some(None) - means in cache but all of the checksums failed so the block is unreadable, Some(Some) - in cache and has data
+    fn get_from_block_cache(
+        &mut self,
+        key: &([u64; 4], zio::ChecksumMethod),
+    ) -> Option<Option<&[u8]>>;
+
+    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Option<Vec<u8>>);
 
     fn get_size(&self) -> u64;
     // NOTE: Read and write ignore the labels and the boot block
@@ -92,12 +98,20 @@ impl From<File> for VdevFile {
 }
 
 impl VdevRaw for VdevFile {
-    // Files don't have a block cache
-    fn get_from_block_cache(&mut self, _key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>> {
+    // Basic vdevs don't have a block cache right now
+    fn get_from_block_cache(
+        &mut self,
+        _key: &([u64; 4], zio::ChecksumMethod),
+    ) -> Option<Option<&[u8]>> {
         None
     }
 
-    fn put_in_block_cache(&mut self, _key: ([u64; 4], zio::ChecksumMethod), _value: Vec<u8>) {}
+    fn put_in_block_cache(
+        &mut self,
+        _key: ([u64; 4], zio::ChecksumMethod),
+        _value: Option<Vec<u8>>,
+    ) {
+    }
 
     fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
         let mut buf = vec![0u8; amount_in_bytes];
@@ -156,9 +170,12 @@ impl VdevRaw for VdevFile {
 }
 
 trait VdevRaw {
-    fn get_from_block_cache(&mut self, key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>>;
+    fn get_from_block_cache(
+        &mut self,
+        key: &([u64; 4], zio::ChecksumMethod),
+    ) -> Option<Option<&[u8]>>;
 
-    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Vec<u8>);
+    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Option<Vec<u8>>);
 
     fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()>;
 
@@ -172,11 +189,14 @@ impl<T> Vdev for T
 where
     T: VdevRaw + Debug + Send,
 {
-    fn get_from_block_cache(&mut self, key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>> {
+    fn get_from_block_cache(
+        &mut self,
+        key: &([u64; 4], zio::ChecksumMethod),
+    ) -> Option<Option<&[u8]>> {
         VdevRaw::get_from_block_cache(self, key)
     }
 
-    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Vec<u8>) {
+    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Option<Vec<u8>>) {
         VdevRaw::put_in_block_cache(self, key, value)
     }
 
@@ -261,7 +281,7 @@ pub struct VdevRaidz<'a> {
     sector_cache: LruCache<u64, Vec<u8>>,
     sector_cache_hits: u64,
     sector_cache_misses: u64,
-    block_cache: LruCache<([u64; 4], zio::ChecksumMethod), Vec<u8>>,
+    block_cache: LruCache<([u64; 4], zio::ChecksumMethod), Option<Vec<u8>>>,
     block_cache_hits: u64,
     block_cache_misses: u64,
     last_debug: time::SystemTime,
@@ -282,12 +302,12 @@ impl<'a> VdevRaidz<'a> {
             ndevices,
             nparity,
             asize,
-            // A sector is usually 4k or 512b, so this will take max ~128mb
-            sector_cache: lru::LruCache::new(48_000.try_into().unwrap()),
+            // NOTE: A sector is usually 4k or 512b
+            sector_cache: LruCache::new(64_000.try_into().unwrap()),
             sector_cache_hits: 0,
             sector_cache_misses: 0,
-            // A block is usually <128kb, so this will take max ~4gb
-            block_cache: lru::LruCache::new(24_000.try_into().unwrap()),
+            // NOTE: A block is usually ~128kb
+            block_cache: LruCache::new(32_000.try_into().unwrap()),
             block_cache_hits: 0,
             block_cache_misses: 0,
             last_debug: time::SystemTime::now(),
@@ -349,7 +369,10 @@ impl<'a> VdevRaidz<'a> {
 }
 
 impl Vdev for VdevRaidz<'_> {
-    fn get_from_block_cache(&mut self, key: &([u64; 4], zio::ChecksumMethod)) -> Option<&Vec<u8>> {
+    fn get_from_block_cache(
+        &mut self,
+        key: &([u64; 4], zio::ChecksumMethod),
+    ) -> Option<Option<&[u8]>> {
         let res = self.block_cache.get(key);
         if cfg!(feature = "debug") {
             if res.is_some() {
@@ -375,10 +398,10 @@ impl Vdev for VdevRaidz<'_> {
             }
         }
 
-        res
+        res.map(|lookup| lookup.as_ref().map(|vec| vec.as_slice()))
     }
 
-    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Vec<u8>) {
+    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Option<Vec<u8>>) {
         self.block_cache.put(key, value);
     }
 
@@ -420,6 +443,7 @@ impl Vdev for VdevRaidz<'_> {
         } else {
             (size_remaining / self.get_asize()) + 1
         };
+
         for sector_index in 1..=sectors_to_read {
             result.extend(self.read_sector(first_sector_index + sector_index as u64)?);
         }

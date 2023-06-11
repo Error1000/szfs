@@ -161,42 +161,31 @@ fn main() {
     let mut vdevs = HashMap::<usize, &mut dyn Vdev>::new();
     vdevs.insert(0usize, &mut vdev_raidz);
 
-    let recovered_fragments: Vec<([u64; 4], Fragment)> =
-        serde_json::from_reader(File::open("undelete-double-filtered-checkpoint.json").unwrap())
-            .unwrap();
-    /*
-        recovered_fragments.retain_mut(|frag| {
-            if let FragmentData::FileDNode(file) = &mut frag.1.data {
-                if file.0.get_data_size() > 600 * 1024 * 1024 * 1024 {
-                    true
-                } else if let Ok(first_block) = file.0.read_block(0, &mut vdevs) {
-                    first_block[40..=47] == [0x33, 0x3A, 0x09, 0x84, 0xFC, 0x00, 0x00, 0x00]
-                        && first_block[0..=3] == [b'h', b's', b'q', b's']
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        });
+    let mut recovered_fragments: Vec<([u64; 4], Fragment)> =
+        serde_json::from_reader(File::open("undelete-filtered-checkpoint.json").unwrap()).unwrap();
 
-        recovered_fragments.sort_unstable_by_key(|f| {
-            let FragmentData::FileDNode(f) = &f.1.data else {panic!("");};
-            Reverse(f.0.get_data_size())
-        });
+    recovered_fragments.retain_mut(|frag| {
+        if let FragmentData::FileDNode(file) = &mut frag.1.data {
+            let file_cr_time_unix_timestamp = u64::from_le_bytes(
+                file.0.get_bonus_data()[14 * 8..14 * 8 + 8]
+                    .try_into()
+                    .unwrap(),
+            );
+            file_cr_time_unix_timestamp == 1674749006
+        } else {
+            false
+        }
+    });
 
-        write!(
-            OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open("undelete-double-filtered-checkpoint.json")
-                .unwrap(),
-            "{}",
-            &serde_json::to_string(&recovered_fragments).unwrap()
-        )
-        .unwrap();
-    */
+    recovered_fragments.sort_unstable_by_key(|f| {
+        let FragmentData::FileDNode(f) = &f.1.data else {panic!("");};
+        Reverse(f.0.get_data_size())
+    });
+
+    for res in recovered_fragments.iter() {
+        println!("{:?}", res);
+    }
+
     let biggest_file_hsh = recovered_fragments[0].0;
     let mut recovered_fragments: LruCache<[u64; 4], Fragment> = {
         let mut res = LruCache::unbounded();
@@ -207,10 +196,6 @@ fn main() {
     };
 
     recovered_fragments.get(&biggest_file_hsh); // Update LRU
-
-    for res in recovered_fragments.iter() {
-        println!("{:?}", res);
-    }
 
     println!(
         "N fragments loaded form checkpoint: {}",

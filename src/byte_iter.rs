@@ -27,7 +27,6 @@ where
     It: Iterator<Item = u8>,
 {
     fn from_bytes(it: &mut It) -> Option<Self> {
-        let mut it = it.into_iter();
         it.next()
     }
 }

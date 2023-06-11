@@ -17,13 +17,13 @@ pub fn lz4_decompress_blocks(
     };
 
     loop {
-        let token = data.next().ok_or(output_buf.clone())?;
+        let token = data.next().ok_or_else(|| output_buf.clone())?;
         let mut literal_size: usize = ((token & 0xF0) >> 4).into();
         let mut lookback_size: usize = ((token & 0x0F) >> 0).into();
         // Handle extended literal sizes
         if literal_size == 0xF {
             loop {
-                let extended_size: usize = data.next().ok_or(output_buf.clone())?.into();
+                let extended_size: usize = data.next().ok_or_else(|| output_buf.clone())?.into();
                 literal_size += extended_size;
                 if extended_size != 0xFF {
                     break;
@@ -33,7 +33,7 @@ pub fn lz4_decompress_blocks(
 
         // Copy literal_size bytes to output_buf
         for _ in 0..literal_size {
-            output_buf.push(data.next().ok_or(output_buf.clone())?);
+            output_buf.push(data.next().ok_or_else(|| output_buf.clone())?);
         }
 
         let Some(lookback) = u16::from_bytes_le(data) else {
@@ -56,7 +56,7 @@ pub fn lz4_decompress_blocks(
         // Handle extended lookback sizes
         if lookback_size == 0xF {
             loop {
-                let extended_size: usize = data.next().ok_or(output_buf.clone())?.into();
+                let extended_size: usize = data.next().ok_or_else(|| output_buf.clone())?.into();
                 lookback_size += extended_size;
                 if extended_size != 0xFF {
                     break;

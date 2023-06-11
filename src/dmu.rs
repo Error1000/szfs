@@ -8,7 +8,7 @@ use crate::{
 };
 use std::{collections::HashMap, fmt::Debug};
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Clone, Copy)]
 pub enum ObjType {
     None = 0,
     ObjectDirectory = 1,
@@ -360,10 +360,15 @@ impl DNodeBase {
         ((self.max_indirect_block_id + 1) as usize) * self.parse_data_block_size()
     }
 
-    pub fn read_block(&mut self, block_id: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
+    pub fn get_data_block_pointer(
+        &mut self,
+        block_id: usize,
+        vdevs: &mut zio::Vdevs,
+    ) -> Result<BlockPointer, ()> {
         if block_id > self.max_indirect_block_id as usize {
             return Err(());
         }
+
         assert!(self.n_indirect_levels >= 1);
         let blocks_per_indirect_block =
             self.parse_indirect_block_size() / BlockPointer::get_ondisk_size();
@@ -389,10 +394,9 @@ impl DNodeBase {
         // Travel back down to the leafs
         let top_level = levels.pop().unwrap();
         let mut indirect_block_data;
-        let mut next_block_pointer_ref = &mut self.block_pointers[top_level.offset];
-        let mut next_block_pointer;
+        let mut next_block_pointer = self.block_pointers[top_level.offset].clone();
         for _ in 0..self.n_indirect_levels - 1 {
-            indirect_block_data = next_block_pointer_ref.dereference(vdevs)?;
+            indirect_block_data = next_block_pointer.dereference(vdevs)?;
             let cur_level = levels.pop().unwrap();
             next_block_pointer = {
                 let mut iter = indirect_block_data.iter().copied();
@@ -400,10 +404,15 @@ impl DNodeBase {
                     .ok_or(())?;
                 BlockPointer::from_bytes_le(&mut iter).ok_or(())?
             };
-            next_block_pointer_ref = &mut next_block_pointer;
         }
 
-        let block_data = next_block_pointer_ref.dereference(vdevs)?;
+        Ok(next_block_pointer)
+    }
+
+    pub fn read_block(&mut self, block_id: usize, vdevs: &mut zio::Vdevs) -> Result<Vec<u8>, ()> {
+        let block_data = self
+            .get_data_block_pointer(block_id, vdevs)?
+            .dereference(vdevs)?;
         assert!(block_data.len() == self.parse_data_block_size());
         Ok(block_data)
     }
@@ -419,7 +428,7 @@ impl DNodeBase {
             return Ok(Vec::new());
         }
 
-        let mut result: Vec<u8> = Vec::new();
+        let mut result: Vec<u8> = Vec::with_capacity(size);
         let first_data_block_index = offset / (self.parse_data_block_size() as u64);
         let first_data_block_offset = offset % (self.parse_data_block_size() as u64);
         let first_data_block = self.read_block(first_data_block_index as usize, vdevs)?;

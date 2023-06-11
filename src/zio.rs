@@ -52,7 +52,7 @@ impl GangBlock {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DataVirtualAddress {
     vdev_id: u32,
     data_allocated_size_minus_one_in_512b_sectors: u32, // technically a u24
@@ -140,7 +140,7 @@ impl DataVirtualAddress {
 
             // Now theoretically we just dereference each block pointer sequentially
             // and concatenate the results right?
-            let mut gang_data = Vec::<u8>::new();
+            let mut gang_data = Vec::<u8>::with_capacity(size);
             for bp in gang_block.bps {
                 // NOTE: On any normal gang header
                 // if the checksum passes then the following code shouldn't be a problem
@@ -428,7 +428,7 @@ fn try_checksum_block(block_data: &[u8], checksum_method: ChecksumMethod) -> Opt
 // 100 00000 00001011 00000111 0 0001111 0000000000000000 0000000000000111
 // 3   5     8        8        1 7       16	              16
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct NormalBlockPointer {
     dvas: [Option<DataVirtualAddress>; 3],
     level: usize,
@@ -534,6 +534,14 @@ impl NormalBlockPointer {
         (self.physical_size_in_512b_sectors_minus_one as u64 + 1) * 512
     }
 
+    pub fn get_checksum(&self) -> [u64; 4] {
+        self.checksum
+    }
+
+    pub fn get_dvas(&self) -> &[Option<DataVirtualAddress>; 3] {
+        &self.dvas
+    }
+
     // NOTE: zfs always checksums the data once put together, so the checksum is of the data pointed to by the gang blocks once stitched together, and it is done before decompression
     pub fn dereference(&mut self, vdevs: &mut Vdevs) -> Result<Vec<u8>, ()> {
         if let Some(res) = vdevs
@@ -541,7 +549,7 @@ impl NormalBlockPointer {
             .unwrap()
             .get_from_block_cache(&(self.checksum, self.checksum_method))
         {
-            return Ok(res.clone());
+            return res.map(|val| val.to_vec()).ok_or(());
         }
 
         for dva in self.dvas.iter().filter_map(|val| val.as_ref()) {
@@ -587,7 +595,7 @@ impl NormalBlockPointer {
             vdevs
                 .get_mut(&0)
                 .unwrap()
-                .put_in_block_cache((self.checksum, self.checksum_method), data.clone());
+                .put_in_block_cache((self.checksum, self.checksum_method), Some(data.clone()));
             return Ok(data);
         }
 
@@ -617,10 +625,10 @@ impl NormalBlockPointer {
                         return Err(());
                     }
 
-                    vdevs
-                        .get_mut(&0)
-                        .unwrap()
-                        .put_in_block_cache((self.checksum, self.checksum_method), data.clone());
+                    vdevs.get_mut(&0).unwrap().put_in_block_cache(
+                        (self.checksum, self.checksum_method),
+                        Some(data.clone()),
+                    );
                     return Ok(data);
                 };
             }
@@ -634,13 +642,17 @@ impl NormalBlockPointer {
             );
         }
 
+        vdevs.get_mut(&0).unwrap().put_in_block_cache(
+            (self.checksum, self.checksum_method),
+            None,
+        );
         Err(())
     }
 }
 
 // Reference: https://github.com/openzfs/zfs/blob/master/include/sys/spa.h#L265
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct EmbeddedBlockPointer {
     payload: Vec<u8>,
     logical_birth_txg: u64,
@@ -763,7 +775,7 @@ impl EmbeddedBlockPointer {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum BlockPointer {
     Normal(NormalBlockPointer),
     Embedded(EmbeddedBlockPointer),
