@@ -2,12 +2,13 @@ use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    sync::Mutex,
+    sync::{atomic::AtomicU64, Mutex},
 };
 
 use fftconvolve::fftconvolve;
 use lazy_static::lazy_static;
 use ndarray::arr1;
+use rayon::prelude::ParallelIterator;
 
 use crate::{
     fletcher::do_fletcher4,
@@ -98,9 +99,108 @@ lazy_static! {
     );
 }
 
-// Returns: Location of a block with the specifed checksum
+// Returns: Iterator that yields possible offsets for every checksum
 // NOTE: Will *not* work for finding the contents of gang blocks
 // but will work for finding the gang block itself
+
+pub fn potential_matches_for_block_with_fletcher4_checksum_vectorized(
+    raidz_ndevices: usize,
+    raidz_nparity: usize,
+    sector_size: usize,
+    psize: usize,
+    checksums_to_look_for: HashMap<u32, [u64; 4]>,
+    open_checksum_map: fn() -> File,
+) -> Option<impl ParallelIterator<Item = ([u64; 4], u64)>> {
+    let mut checksum_map_file = open_checksum_map();
+    let checksum_map_file_size = checksum_map_file.seek(SeekFrom::End(0)).unwrap();
+
+    // Extrapolate disk size from checksum map file size
+    let disk_size = (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64)
+        * sector_size as u64;
+
+    let block_size_upper_bound =
+        psize / sector_size + psize / sector_size / (raidz_ndevices - 1) + 1;
+
+    let is_raidz1 = raidz_nparity == 1;
+
+    let sync_off = AtomicU64::new(0);
+
+    use rayon::prelude::*;
+    Some(
+        (0..usize::try_from(disk_size).unwrap())
+            .into_par_iter()
+            .step_by(1024 * 1024)
+            .fold(
+                move || (open_checksum_map(), Vec::new()),
+                move |(mut checksum_map_file, mut partial_matches), off| {
+                    let off = off as u64;
+
+                    let sync_off_val = sync_off
+                        .fetch_add(1024 * 1024, std::sync::atomic::Ordering::Relaxed)
+                        + 1024 * 1024;
+
+                    if sync_off_val % 536870912 == 0 {
+                        println!(
+                            "{}% done doing yolo block recovery!",
+                            (sync_off_val as f32 / disk_size as f32) * 100.0
+                        );
+                    }
+
+                    // We over-read because the convolution needs more than
+                    // 1 mb of sectors to calculate the partial checksum
+                    // of the block starting at each one of the sectors
+
+                    let mut hunk = vec![
+                        0u8;
+                        (1024 * 1024 / sector_size + block_size_upper_bound)
+                            * core::mem::size_of::<ChecksumTableEntry>()
+                    ];
+
+                    let checksum_file_offset = (off / sector_size as u64)
+                        * core::mem::size_of::<ChecksumTableEntry>() as u64;
+                    checksum_map_file
+                        .seek(SeekFrom::Start(checksum_file_offset))
+                        .unwrap();
+                    let _ = checksum_map_file.read(&mut hunk).unwrap();
+                    let mut checksums = Vec::<ChecksumTableEntry>::new();
+                    for index in (0..hunk.len()).step_by(core::mem::size_of::<ChecksumTableEntry>())
+                    {
+                        checksums.push(ChecksumTableEntry::from_le_bytes(
+                            hunk[index..index + core::mem::size_of::<ChecksumTableEntry>()]
+                                .try_into()
+                                .unwrap(),
+                        ));
+                    }
+
+                    let res = calculate_fletcher4_partial_block_checksums(
+                        off,
+                        psize,
+                        is_raidz1,
+                        sector_size,
+                        raidz_ndevices,
+                        raidz_nparity,
+                        &checksums,
+                    );
+
+                    for ind in 0..res.len() {
+                        if let Some(checksum) = checksums_to_look_for.get(&(res[ind] as u32)) {
+                            use crate::ansi_color::*;
+                            println!(
+                                "{CYAN}Info{WHITE}: Found partial match at {}!",
+                                off + (ind as u64) * (sector_size as u64)
+                            );
+                            partial_matches
+                                .push((*checksum, off + (ind as u64) * (sector_size as u64)));
+                        }
+                    }
+
+                    (checksum_map_file, partial_matches)
+                },
+            )
+            .map(|(_, r)| r)
+            .flatten(),
+    )
+}
 
 pub fn find_block_with_fletcher4_checksum(
     vdevs: &mut Vdevs,
@@ -121,93 +221,29 @@ pub fn find_block_with_fletcher4_checksum(
 
     use crate::ansi_color::*;
     println!(
-        "{YELLOW}Warning{WHITE}: Doing YOLO block recovery for block with checksum: {:?} of psize: {:?} using sector size: {:?}!",
-        checksum,
-        psize,
-        sector_size
-    );
-
-    let mut checksum_map_file = File::open("checksum-map.bin").unwrap();
-    let checksum_map_file_size = checksum_map_file.seek(SeekFrom::End(0)).unwrap();
-
-    let disk_size = (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64)
-        * sector_size as u64;
-
-    let partial_checksum_to_look_for = checksum[0] as ChecksumTableEntry;
-
-    let raidz_ndevices = raidz_vdev_info.ndevices;
-    let raidz_nparity = raidz_vdev_info.nparity;
-    let is_raidz1 = raidz_vdev_info.nparity == 1;
-
-    let block_size_upper_bound =
-        psize / sector_size + psize / sector_size / (raidz_ndevices - 1) + 1;
+            "{YELLOW}Warning{WHITE}: Doing YOLO block recovery for block with checksum: {:?} of psize: {:?} using sector size: {:?}!",
+            checksum,
+            psize,
+            sector_size
+        );
 
     use rayon::prelude::*;
-    let result: Option<u64> = (0..usize::try_from(disk_size).unwrap())
-        .into_par_iter()
-        .step_by(1024 * 1024)
-        .fold(
-            || (File::open("checksum-map.bin").unwrap(), Vec::new()),
-            |(mut checksum_map_file, mut partial_matches), off| {
-                let off = off as u64;
-
-                // We over-read because the convolution needs more than
-                // 1 mb of sectors to calculate the partial checksum
-                // of the block starting at each one of the sectors
-
-                let mut hunk = vec![
-                    0u8;
-                    (1024 * 1024 / sector_size + block_size_upper_bound)
-                        * core::mem::size_of::<ChecksumTableEntry>()
-                ];
-
-                let checksum_file_offset =
-                    (off / sector_size as u64) * core::mem::size_of::<ChecksumTableEntry>() as u64;
-                checksum_map_file
-                    .seek(SeekFrom::Start(checksum_file_offset))
-                    .unwrap();
-                let _ = checksum_map_file.read(&mut hunk).unwrap();
-                let mut checksums = Vec::<ChecksumTableEntry>::new();
-                for index in (0..hunk.len()).step_by(core::mem::size_of::<ChecksumTableEntry>()) {
-                    checksums.push(ChecksumTableEntry::from_le_bytes(
-                        hunk[index..index + core::mem::size_of::<ChecksumTableEntry>()]
-                            .try_into()
-                            .unwrap(),
-                    ));
-                }
-
-                let res = calculate_fletcher4_partial_block_checksums(
-                    off,
-                    psize,
-                    is_raidz1,
-                    sector_size,
-                    raidz_ndevices,
-                    raidz_nparity,
-                    &checksums,
-                );
-
-                for ind in 0..res.len() {
-                    if res[ind] as u32 == partial_checksum_to_look_for {
-                        println!(
-                            "{CYAN}Info{WHITE}: Found partial match at {}!",
-                            off + (ind as u64) * (sector_size as u64)
-                        );
-                        partial_matches.push(off + (ind as u64) * (sector_size as u64));
-                    }
-                }
-
-                (checksum_map_file, partial_matches)
-            },
-        )
-        .map(|(_, r)| r)
-        .flatten()
-        .find_any(move |&partial_match_off| {
-            // Check to see if the match is correct
-            let dva = DataVirtualAddress::from(0, partial_match_off, false);
-            let Ok(data) = dva.dereference(&mut vdevs.lock().unwrap(), psize) else { return false; };
-            let checksum_of_match = do_fletcher4(&data);
-            return checksum_of_match == *checksum;
-        });
+    let result: Option<u64> = potential_matches_for_block_with_fletcher4_checksum_vectorized(
+        raidz_vdev_info.ndevices,
+        raidz_vdev_info.nparity,
+        sector_size,
+        psize,
+        HashMap::from([(checksum[0] as u32, *checksum)]),
+        || File::open("checksum-map.bin").unwrap(),
+    )?
+    .map(|(_, match_off)| match_off)
+    .find_any(move |&partial_match_off| {
+        // Check to see if the match is correct
+        let dva = DataVirtualAddress::from(0, partial_match_off, false);
+        let Ok(data) = dva.dereference(&mut vdevs.lock().unwrap(), psize) else { return false; };
+        let checksum_of_match = do_fletcher4(&data);
+        return checksum_of_match == *checksum;
+    });
 
     let save_yolo_cache = |map: &HashMap<_, _>| {
         // Save the new cache
@@ -231,10 +267,10 @@ pub fn find_block_with_fletcher4_checksum(
         } // Eh.. it's not that big a deal if we can't lock, we just miss some optimisations, just don't crash the app that's the main priority
 
         println!(
-            "{CYAN}Info{WHITE}: YOLO block recovery succeded for block with checksum: {:?}, the result was offset {:?}!",
-            checksum,
-            off
-        );
+                "{CYAN}Info{WHITE}: YOLO block recovery succeded for block with checksum: {:?}, the result was offset {:?}!",
+                checksum,
+                off
+            );
 
         return Some(off);
     } else {

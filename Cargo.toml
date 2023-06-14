@@ -12,6 +12,9 @@ verbose_debug = []
 name = "undelete-postrecover"
 
 [[bin]]
+name = "find-block-with-checksum-postrecover"
+
+[[bin]]
 name = "fs-walker"
 
 [[bin]]

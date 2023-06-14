@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
@@ -12,11 +13,13 @@ type ChecksumTableEntry = u32;
 fn main() {
     let mut checksum_map_file = File::open("checksum-map.bin").unwrap();
     let checksum_map_file_size = checksum_map_file.seek(SeekFrom::End(0)).unwrap();
-    let psize: usize = str::parse(env::args().nth(1).unwrap().trim()).expect("Usage: find-block-with-checksum (psize) (sector_size)");
-    let sector_size: u64 = str::parse(env::args().nth(2).unwrap().trim()).expect("Usage: find-block-with-checksum (psize) (sector_size)");
+    let psize: usize = str::parse(env::args().nth(1).unwrap().trim())
+        .expect("Usage: find-block-with-checksum (psize) (sector_size)");
+    let sector_size: usize = str::parse(env::args().nth(2).unwrap().trim())
+        .expect("Usage: find-block-with-checksum (psize) (sector_size)");
 
-    let disk_size =
-        (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64) * sector_size;
+    let disk_size = (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64)
+        * sector_size as u64;
 
     println!(
         "RAIDZ total size (GB): {}",
@@ -31,87 +34,25 @@ fn main() {
     std::io::stdin()
         .read_line(&mut input_line)
         .expect("Reading a line should work!");
-    let Ok(hsh) = parse_checksum_from_str(&input_line) else {
+    let Ok(checksum) = parse_checksum_from_str(&input_line) else {
         panic!("Couldn't parse hash!");
     };
 
-    let partial_checksum_to_look_for = hsh[0] as ChecksumTableEntry;
-
     let raidz_ndevices = 4;
-    let is_raidz1 = true;
+    let raidz_nparity = 1;
 
-    let block_size_upper_bound =
-        psize / sector_size as usize + psize / sector_size as usize / (raidz_ndevices - 1) + 1;
-
-    let sync_off = AtomicU64::from(0);
     use rayon::prelude::*;
-    let potential_matches: Vec<u64> = (0..usize::try_from(disk_size).unwrap())
-        .into_par_iter()
-        .step_by(1024 * 1024)
-        .fold(
-            || (File::open("checksum-map.bin").unwrap(), Vec::<u64>::new()),
-            |(mut checksum_map_file, mut potential_matches), off| {
-                let off = off as u64;
-
-                let sync_off =
-                    sync_off.fetch_add(1024 * 1024, std::sync::atomic::Ordering::Relaxed);
-
-                if sync_off % (100 * 1024 * 1024 * 1024) == 0 && off != 0 {
-                    // Every ~100 gb
-                    println!(
-                        "{}% done looking for checksum ...",
-                        ((sync_off as f32) / (disk_size as f32)) * 100.0
-                    );
-                }
-
-                // We over-read because the convolution needs more than
-                // 1 mb of sectors to calculate the partial checksum
-                // of the block starting at each one of the sectors
-                let mut hunk = vec![
-                    0u8;
-                    (1024 * 1024 / sector_size as usize + block_size_upper_bound)
-                        * core::mem::size_of::<ChecksumTableEntry>()
-                ];
-
-                let checksum_file_offset =
-                    (off / sector_size) * core::mem::size_of::<ChecksumTableEntry>() as u64;
-                checksum_map_file
-                    .seek(SeekFrom::Start(checksum_file_offset))
-                    .unwrap();
-                let _ = checksum_map_file.read(&mut hunk).unwrap();
-                let mut checksums = Vec::<ChecksumTableEntry>::new();
-                for index in (0..hunk.len()).step_by(core::mem::size_of::<ChecksumTableEntry>()) {
-                    checksums.push(ChecksumTableEntry::from_le_bytes(
-                        hunk[index..index + core::mem::size_of::<ChecksumTableEntry>()]
-                            .try_into()
-                            .unwrap(),
-                    ));
-                }
-
-                let res = yolo_block_recovery::calculate_fletcher4_partial_block_checksums(
-                    off,
-                    psize,
-                    is_raidz1,
-                    sector_size as usize,
-                    raidz_ndevices,
-                    &checksums,
-                );
-
-                for ind in 0..res.len() {
-                    if res[ind] as u32 == partial_checksum_to_look_for {
-                        println!(
-                            "Found potential match at {}!",
-                            off + (ind as u64) * sector_size
-                        );
-                        potential_matches.push(off + (ind as u64) * sector_size);
-                    }
-                }
-
-                (checksum_map_file, potential_matches)
-            },
+    let potential_matches: Vec<u64> =
+        yolo_block_recovery::potential_matches_for_block_with_fletcher4_checksum_vectorized(
+            raidz_ndevices,
+            raidz_nparity,
+            sector_size,
+            psize,
+            HashMap::from([(checksum[0] as u32, checksum)]),
+            || File::open("checksum-map.bin").unwrap(),
         )
-        .map(|(_, thread_potential_matches)| thread_potential_matches)
-        .flatten()
+        .unwrap()
+        .map(|(_, potential_match)| potential_match)
         .collect();
 
     println!(
