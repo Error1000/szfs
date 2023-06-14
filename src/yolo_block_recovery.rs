@@ -22,7 +22,9 @@ pub fn calculate_convolution_vector_for_block(
     is_raidz1: bool,
     sector_size: usize,
     raidz_ndevices: usize,
+    raidz_nparity: usize,
 ) -> Vec<bool> {
+    assert!(raidz_nparity < raidz_ndevices);
     let mut column_mapping = (0..raidz_ndevices).collect::<Vec<usize>>();
 
     // Source: https://github.com/openzfs/zfs/blob/master/module/zfs/vdev_raidz.c#L398
@@ -37,7 +39,7 @@ pub fn calculate_convolution_vector_for_block(
         let column = index % raidz_ndevices;
         let mapped_column = column_mapping[column];
 
-        if mapped_column == 0 {
+        if mapped_column < raidz_nparity {
             // parity blocks are not included
             res.push(false);
             continue;
@@ -60,14 +62,21 @@ pub fn calculate_fletcher4_partial_block_checksums(
     is_raidz1: bool,
     sector_size: usize,
     raidz_ndevices: usize,
+    raidz_nparity: usize,
     sector_checksums: &[ChecksumTableEntry],
 ) -> Vec<u64> {
-    let cv: Vec<f64> =
-        calculate_convolution_vector_for_block(off, psize, is_raidz1, sector_size, raidz_ndevices)
-            .into_iter()
-            .map(|val| val as u8 as f64)
-            .rev()
-            .collect();
+    let cv: Vec<f64> = calculate_convolution_vector_for_block(
+        off,
+        psize,
+        is_raidz1,
+        sector_size,
+        raidz_ndevices,
+        raidz_nparity,
+    )
+    .into_iter()
+    .map(|val| val as u8 as f64)
+    .rev()
+    .collect();
     let sv: Vec<f64> = sector_checksums.iter().map(|val| *val as f64).collect();
     let res = fftconvolve(&arr1(&sv), &arr1(&cv), fftconvolve::Mode::Full).unwrap();
     let mut res: Vec<u64> = res
@@ -127,6 +136,7 @@ pub fn find_block_with_fletcher4_checksum(
     let partial_checksum_to_look_for = checksum[0] as ChecksumTableEntry;
 
     let raidz_ndevices = raidz_vdev_info.ndevices;
+    let raidz_nparity = raidz_vdev_info.nparity;
     let is_raidz1 = raidz_vdev_info.nparity == 1;
 
     let block_size_upper_bound =
@@ -172,6 +182,7 @@ pub fn find_block_with_fletcher4_checksum(
                     is_raidz1,
                     sector_size,
                     raidz_ndevices,
+                    raidz_nparity,
                     &checksums,
                 );
 
