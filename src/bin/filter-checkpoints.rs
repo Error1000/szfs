@@ -66,16 +66,40 @@ impl From<FragmentData> for Fragment {
 }
 
 fn main() {
-    let mut recovered_fragments: Vec<([u64; 4], Fragment)> =
+    // NOTE: This was made as quick way to filter and merge outputs from undelete checkpoints
+    let mut recovered_fragments1: Vec<([u64; 4], Fragment)> =
+        serde_json::from_reader(File::open("undelete-step1-checkpoint-first-50%.json").unwrap())
+            .unwrap();
+    recovered_fragments1.retain(|(_, f)| matches!(f.data, FragmentData::FileDNode(_)));
+
+    let mut recovered_fragments2: Vec<([u64; 4], Fragment)> =
         serde_json::from_reader(File::open("undelete-step1-checkpoint-upto-74%.json").unwrap())
             .unwrap();
-    recovered_fragments.retain(|(_, f)| matches!(f.data, FragmentData::FileDNode(_)));
+    recovered_fragments2.retain(|(_, f)| matches!(f.data, FragmentData::FileDNode(_)));
+
+    let mut recovered_fragments3: Vec<([u64; 4], Fragment)> =
+        serde_json::from_reader(File::open("undelete-step1-checkpoint-upto-78%.json").unwrap())
+            .unwrap();
+    recovered_fragments3.retain(|(_, f)| matches!(f.data, FragmentData::FileDNode(_)));
+
+    let mut recovered_fragments4: Vec<([u64; 4], Fragment)> =
+        serde_json::from_reader(File::open("undelete-step1-checkpoint-upto-100%.json").unwrap())
+            .unwrap();
+    recovered_fragments4.retain(|(_, f)| matches!(f.data, FragmentData::FileDNode(_)));
+
+    let recovered_fragments: Vec<([u64; 4], Fragment)> = recovered_fragments1
+        .into_iter()
+        .chain(recovered_fragments2.into_iter())
+        .chain(recovered_fragments3.into_iter())
+        .chain(recovered_fragments4.into_iter())
+        .collect();
+
     write!(
         OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
-            .open("undelete-filtered-checkpoint-upto-74%.json")
+            .open("undelete-filtered-checkpoint.json")
             .unwrap(),
         "{}",
         &serde_json::to_string(&recovered_fragments.into_iter().collect::<Vec<(_, _)>>()).unwrap()

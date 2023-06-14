@@ -5,40 +5,27 @@ use std::{
     fs::{File, OpenOptions},
     io::{Seek, SeekFrom, Write},
 };
-use szfs::{byte_iter::FromBytesLE, zio::Vdevs, *};
+use szfs::{zio::Vdevs, *};
 #[derive(Debug, Serialize, Deserialize)]
 struct IndirectBlock {
     pub bps: Vec<Option<zio::BlockPointer>>,
 }
 
-impl IndirectBlock {
-    pub fn from_bytes_le(data: &[u8], vdevs: &mut Vdevs) -> Option<IndirectBlock> {
-        let mut res = Vec::new();
-        let mut nfound = 0;
-        let data = data.chunks(zio::BlockPointer::get_ondisk_size());
-        for potential_bp in data {
-            if let Some(mut bp) =
-                zio::BlockPointer::from_bytes_le(&mut potential_bp.iter().copied())
-            {
-                res.push(Some(bp));
-                nfound += 1;
-            } else {
-                res.push(None);
-                continue;
-            }
-        }
-
-        if nfound == 0 {
-            return None;
-        }
-
-        Some(IndirectBlock { bps: res })
-    }
-}
-
 type ChecksumTableEntry = u32;
 
 fn main() {
+    // Builds checksum table used by find-block-with-checksum and yolo block recovery
+    // Note: The table is just a tightly packed array of ChecksumTableEntry's in little endian
+    // There is no extra data in the resulting file, the number of entries in the table
+    // is simply the size of the file / the size of a ChecksumTableEntry
+    // A ChecksumTableEntry is a truncated version of the full checksum
+    // this is intentional so as to reduce the amount of space used.
+    // Thus searching in the table for matches is akin to using a bloom filter.
+    // Anyways, the size of ChecksumTableEntry
+    // of 4 bytes was intentionally chosen so as to minimize the
+    // data loss incurred by the pigeon hole effect where even if the
+    // checksum was perfect because there are only so many bits stored
+    // collisions will occur.
     use szfs::ansi_color::*;
 
     let Ok(vdev0) = File::open(env::args().nth(1).unwrap().trim())

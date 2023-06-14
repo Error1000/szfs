@@ -12,8 +12,8 @@ type ChecksumTableEntry = u32;
 fn main() {
     let mut checksum_map_file = File::open("checksum-map.bin").unwrap();
     let checksum_map_file_size = checksum_map_file.seek(SeekFrom::End(0)).unwrap();
-    let psize: usize = str::parse(env::args().nth(1).unwrap().trim()).unwrap();
-    let sector_size: u64 = str::parse(env::args().nth(2).unwrap().trim()).unwrap();
+    let psize: usize = str::parse(env::args().nth(1).unwrap().trim()).expect("Usage: find-block-with-checksum (psize) (sector_size)");
+    let sector_size: u64 = str::parse(env::args().nth(2).unwrap().trim()).expect("Usage: find-block-with-checksum (psize) (sector_size)");
 
     let disk_size =
         (checksum_map_file_size / core::mem::size_of::<ChecksumTableEntry>() as u64) * sector_size;

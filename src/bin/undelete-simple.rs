@@ -150,6 +150,11 @@ fn search_le_bytes_for_dnodes(data: &[u8], vdevs: &mut Vdevs) -> HashMap<[u64; 4
 }
 
 fn main() {
+    // A simplified version of undelete for the times when you don't need *all* of the metadata
+    // or don't really care about reconstructing the original relationships between the metadata
+    // Useful if you don't mind loosing directory structure/other useful data
+    // and want a simple quick search for data
+
     use szfs::ansi_color::*;
 
     let Ok(vdev0) = File::open(env::args().nth(1).unwrap().trim())

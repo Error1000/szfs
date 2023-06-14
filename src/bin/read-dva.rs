@@ -108,9 +108,12 @@ fn main() {
 
     println!("RAIDZ total size (GB): {}", disk_size / 1024 / 1024 / 1024);
 
-    let off: u64 = str::parse(env::args().nth(5).unwrap().trim()).unwrap();
-    let psize: usize = str::parse(env::args().nth(6).unwrap().trim()).unwrap();
-    let lsize: usize = str::parse(env::args().nth(7).unwrap().trim()).unwrap();
+    let off: u64 = str::parse(env::args().nth(5).unwrap().trim())
+        .expect("Usage: read-dva (vdevs...) (off) (physical size) (logical size)");
+    let psize: usize = str::parse(env::args().nth(6).unwrap().trim())
+        .expect("Usage: read-dva (vdevs...) (off) (physical size) (logical size)");
+    let lsize: usize = str::parse(env::args().nth(7).unwrap().trim())
+        .expect("Usage: read-dva (vdevs...) (off) (physical size) (logical size)");
     // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
     let dva = szfs::zio::DataVirtualAddress::from(0, off, false);
     let res = dva.dereference(&mut vdevs, psize).unwrap();

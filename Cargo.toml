@@ -9,10 +9,13 @@ yolo = []
 verbose_debug = []
 
 [[bin]]
+name = "undelete-postrecover"
+
+[[bin]]
 name = "fs-walker"
 
 [[bin]]
-name = "filter-checkpoint"
+name = "filter-checkpoints"
 
 [[bin]]
 name = "undelete"

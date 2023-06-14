@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    byte_iter::{ByteIter, FromBytes, FromBytesLE},
+    byte_iter::{ByteIter, FromBytesLE},
     dmu::{DNode, ObjSet},
     zap,
     zio::Vdevs,
