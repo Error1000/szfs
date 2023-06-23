@@ -42,33 +42,22 @@ impl IndirectBlock {
 fn main() {
     use szfs::ansi_color::*;
 
-    let Ok(vdev0) = File::open(env::args().nth(1).unwrap().trim())
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev0!");
-        return;
-    };
-    let mut vdev0: VdevFile = vdev0.into();
-
-    let Ok(vdev1) = File::open(env::args().nth(2).unwrap().trim())
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev1!");
-        return;
-    };
-    let mut vdev1: VdevFile = vdev1.into();
-
-    let Ok(vdev2) = File::open(env::args().nth(3).unwrap().trim())
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev2!");
-        return;
-    };
-    let mut vdev2: VdevFile = vdev2.into();
-
-    let Ok(vdev3) = File::open(env::args().nth(4).unwrap().trim())
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev3!");
-        return;
-    };
-    let mut vdev3: VdevFile = vdev3.into();
+    let usage = format!(
+        "Usage: {} (vdevs...) (offset) (psize) (lsize)",
+        env::args().next().unwrap()
+    );
+    let mut vdev0: VdevFile = File::open(env::args().nth(1).expect(&usage))
+        .expect("Vdev 0 should be able to be opened!")
+        .into();
+    let mut vdev1: VdevFile = File::open(env::args().nth(2).expect(&usage))
+        .expect("Vdev 1 should be able to be opened!")
+        .into();
+    let mut vdev2: VdevFile = File::open(env::args().nth(3).expect(&usage))
+        .expect("Vdev 2 should be able to be opened!")
+        .into();
+    let mut vdev3: VdevFile = File::open(env::args().nth(4).expect(&usage))
+        .expect("Vdev 3 should be able to be opened!")
+        .into();
 
     // For now just use the first label
     let mut label0 = VdevLabel::from_bytes(
@@ -108,13 +97,9 @@ fn main() {
 
     println!("RAIDZ total size (GB): {}", disk_size / 1024 / 1024 / 1024);
 
-    let off: u64 = str::parse(env::args().nth(5).unwrap().trim())
-        .expect("Usage: read-dva (vdevs...) (off) (physical size) (logical size)");
-    let psize: usize = str::parse(env::args().nth(6).unwrap().trim())
-        .expect("Usage: read-dva (vdevs...) (off) (physical size) (logical size)");
-    let lsize: usize = str::parse(env::args().nth(7).unwrap().trim())
-        .expect("Usage: read-dva (vdevs...) (off) (physical size) (logical size)");
-    // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
+    let off: u64 = str::parse(env::args().nth(5).expect(&usage).trim()).unwrap();
+    let psize: usize = str::parse(env::args().nth(6).expect(&usage).trim()).unwrap();
+    let lsize: usize = str::parse(env::args().nth(7).expect(&usage).trim()).unwrap(); // NOTE: Currently asize is just not used even though it's part of the data structure, because we read it form disk
     let dva = szfs::zio::DataVirtualAddress::from(0, off, false);
     let res = dva.dereference(&mut vdevs, psize).unwrap();
     OpenOptions::new()

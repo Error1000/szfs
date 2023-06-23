@@ -93,33 +93,19 @@ fn aggregated_read_block(
 
 fn main() {
     use szfs::ansi_color::*;
-    let Ok(vdev0) = File::open(env::args().nth(1).unwrap().trim())
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev0!");
-        return;
-    };
-    let mut vdev0: VdevFile = vdev0.into();
-
-    let Ok(vdev1) = File::open(env::args().nth(2).unwrap().trim())
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev1!");
-        return;
-    };
-    let mut vdev1: VdevFile = vdev1.into();
-
-    let Ok(vdev2) = File::open(env::args().nth(3).unwrap().trim())
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev2!");
-        return;
-    };
-    let mut vdev2: VdevFile = vdev2.into();
-
-    let Ok(vdev3) = File::open(env::args().nth(4).unwrap().trim())
-    else {
-        println!("{RED}Fatal{WHITE}: Failed to open vdev3!");
-        return;
-    };
-    let mut vdev3: VdevFile = vdev3.into();
+    let usage = format!("Usage: {} (vdevs...)", env::args().next().unwrap());
+    let mut vdev0: VdevFile = File::open(env::args().nth(1).expect(&usage))
+        .expect("Vdev 0 should be able to be opened!")
+        .into();
+    let mut vdev1: VdevFile = File::open(env::args().nth(2).expect(&usage))
+        .expect("Vdev 1 should be able to be opened!")
+        .into();
+    let mut vdev2: VdevFile = File::open(env::args().nth(3).expect(&usage))
+        .expect("Vdev 2 should be able to be opened!")
+        .into();
+    let mut vdev3: VdevFile = File::open(env::args().nth(4).expect(&usage))
+        .expect("Vdev 3 should be able to be opened!")
+        .into();
 
     // For now just use the first label
     let mut label0 = VdevLabel::from_bytes(
@@ -171,6 +157,9 @@ fn main() {
                     .try_into()
                     .unwrap(),
             );
+            // Note: I happen to have reliably recovered the creation time
+            // and I also am pretty sure that no other files were created in the same second
+            // So for my use case this is a pretty good filter
             file_cr_time_unix_timestamp == 1674749006
         } else {
             false
@@ -251,6 +240,7 @@ fn main() {
         if let Ok((block_data, _)) =
             aggregated_read_block(block_id, &mut recovered_fragments, &mut vdevs)
         {
+            assert!(block_data.len() == file_block_size);
             output_file.write_all(&block_data).unwrap();
         } else {
             println!("Block {block_id} is bad!");

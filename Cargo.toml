@@ -12,6 +12,9 @@ verbose_debug = []
 name = "undelete-postrecover"
 
 [[bin]]
+name = "apply-binpatch"
+
+[[bin]]
 name = "find-block-with-checksum-postrecover"
 
 [[bin]]
@@ -46,3 +49,4 @@ num_cpus = "*"
 fftconvolve = "*"
 ndarray = "*"
 lazy_static = "*"
+itertools = "*"

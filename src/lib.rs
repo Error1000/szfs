@@ -97,22 +97,7 @@ impl From<File> for VdevFile {
     }
 }
 
-impl VdevRaw for VdevFile {
-    // Basic vdevs don't have a block cache right now
-    fn get_from_block_cache(
-        &mut self,
-        _key: &([u64; 4], zio::ChecksumMethod),
-    ) -> Option<Option<&[u8]>> {
-        None
-    }
-
-    fn put_in_block_cache(
-        &mut self,
-        _key: ([u64; 4], zio::ChecksumMethod),
-        _value: Option<Vec<u8>>,
-    ) {
-    }
-
+impl VdevFile {
     fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()> {
         let mut buf = vec![0u8; amount_in_bytes];
         self.device
@@ -169,35 +154,19 @@ impl VdevRaw for VdevFile {
     }
 }
 
-trait VdevRaw {
+impl Vdev for VdevFile {
     fn get_from_block_cache(
         &mut self,
-        key: &([u64; 4], zio::ChecksumMethod),
-    ) -> Option<Option<&[u8]>>;
-
-    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Option<Vec<u8>>);
-
-    fn read_raw(&mut self, offset_in_bytes: u64, amount_in_bytes: usize) -> Result<Vec<u8>, ()>;
-
-    fn write_raw(&mut self, offset_in_bytes: u64, data: &[u8]) -> Result<(), ()>;
-
-    #[must_use]
-    fn get_raw_size(&self) -> u64;
-}
-
-impl<T> Vdev for T
-where
-    T: VdevRaw + Debug + Send,
-{
-    fn get_from_block_cache(
-        &mut self,
-        key: &([u64; 4], zio::ChecksumMethod),
+        _key: &([u64; 4], zio::ChecksumMethod),
     ) -> Option<Option<&[u8]>> {
-        VdevRaw::get_from_block_cache(self, key)
+        None
     }
 
-    fn put_in_block_cache(&mut self, key: ([u64; 4], zio::ChecksumMethod), value: Option<Vec<u8>>) {
-        VdevRaw::put_in_block_cache(self, key, value)
+    fn put_in_block_cache(
+        &mut self,
+        _key: ([u64; 4], zio::ChecksumMethod),
+        _value: Option<Vec<u8>>,
+    ) {
     }
 
     fn get_raidz_info(&self) -> Option<RaidzInfo> {
